@@ -9,7 +9,7 @@ app.get('/health', (req, res) => {
 
 // Khởi động bot Telegram
 const TelegramBot = require('node-telegram-bot-api');
-const token = '<your-bot-token>'; // Thay bằng token bot của bạn
+const token = '7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk'; // Thay bằng token bot của bạn
 const bot = new TelegramBot(token, { polling: true });
 
 bot.on('message', (msg) => {
