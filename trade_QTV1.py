@@ -14,6 +14,8 @@ import time
 import logging
 import websocket
 import threading
+from flask import Flask
+import os
 
 # --- Setup Logging ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -683,30 +685,30 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
     buy_signals = [
         (1.5 if macd is not None and signal is not None and macd > signal else 0, "MACD Buy"),
         (1.2 if latest_price is not None and sma_5 is not None and latest_price > sma_5 else 0, "SMA Buy"),
-        (1.5 if volume_trend == "TĂNG" else 0, "Volume Up"),  # Increased weight
+        (1.5 if volume_trend == "TĂNG" else 0, "Volume Up"),
         (1.5 if lower_band is not None and latest_price <= lower_band else 0, "Bollinger Lower"),
-        (2.0 if rsi is not None and rsi < 30 else 0, "RSI Oversold"),  # Increased weight
-        (2.5 if rsi is not None and rsi < 20 else 0, "RSI Strongly Oversold"),  # NEW: Strong oversold
+        (2.0 if rsi is not None and rsi < 30 else 0, "RSI Oversold"),
+        (2.5 if rsi is not None and rsi < 20 else 0, "RSI Strongly Oversold"),
         (1.2 if k_value is not None and d_value is not None and k_value < 20 else 0, "Stochastic Oversold"),
         (1.5 if vwap is not None and latest_price < vwap else 0, "Below VWAP"),
         (1.3 if fib_618 is not None and latest_price <= fib_618 else 0, "Fib 61.8%"),
         (1.5 if candlestick_pattern == "Doji - Tín hiệu đảo chiều tiềm năng" else 0, "Doji Buy"),
-        (2.0 if volume_spike else 0, "Volume Spike Buy"),  # NEW: Volume spike
-        (2.5 if breakout == "Breakout Up" else 0, "Breakout Up")  # NEW: Breakout
+        (2.0 if volume_spike else 0, "Volume Spike Buy"),
+        (2.5 if breakout == "Breakout Up" else 0, "Breakout Up")
     ]    
     sell_signals = [
         (1.5 if macd is not None and signal is not None and macd < signal else 0, "MACD Sell"),
         (1.2 if latest_price is not None and sma_5 is not None and latest_price < sma_5 else 0, "SMA Sell"),
-        (1.5 if volume_trend == "GIẢM" else 0, "Volume Down"),  # Increased weight
+        (1.5 if volume_trend == "GIẢM" else 0, "Volume Down"),
         (1.5 if upper_band is not None and latest_price >= upper_band else 0, "Bollinger Upper"),
-        (2.0 if rsi is not None and rsi > 70 else 0, "RSI Overbought"),  # Increased weight
-        (2.5 if rsi is not None and rsi > 80 else 0, "RSI Strongly Overbought"),  # NEW: Strong overbought
+        (2.0 if rsi is not None and rsi > 70 else 0, "RSI Overbought"),
+        (2.5 if rsi is not None and rsi > 80 else 0, "RSI Strongly Overbought"),
         (1.2 if k_value is not None and d_value is not None and k_value > 80 else 0, "Stochastic Overbought"),
         (1.5 if vwap is not None and latest_price > vwap else 0, "Above VWAP"),
         (1.3 if fib_382 is not None and latest_price >= fib_382 else 0, "Fib 38.2%"),
         (1.5 if candlestick_pattern == "Doji - Tín hiệu đảo chiều tiềm năng" else 0, "Doji Sell"),
-        (2.0 if volume_spike else 0, "Volume Spike Sell"),  # NEW: Volume spike
-        (2.5 if breakout == "Breakout Down" else 0, "Breakout Down")  # NEW: Breakout
+        (2.0 if volume_spike else 0, "Volume Spike Sell"),
+        (2.5 if breakout == "Breakout Down" else 0, "Breakout Down")
     ]
 
     buy_score = sum(weight for weight, _ in buy_signals)
@@ -897,6 +899,21 @@ def main():
         raise
 
 if __name__ == "__main__":
+    # Khởi tạo Flask app
+    app = Flask(__name__)
+
+    @app.route('/')
+    def health():
+        return "Bot is running", 200
+
+    def run_flask():
+        port = int(os.environ.get('PORT', 8080))
+        app.run(host='0.0.0.0', port=port, debug=False)
+
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
     try:
         main()
     except Exception as e:
