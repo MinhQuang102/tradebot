@@ -1,8 +1,7 @@
 requests==2.31.0
-python-telegram-bot==20.6
+python-telegram-bot[job-queue]==20.6
 numpy==1.26.4
 pandas==2.2.2
 scikit-learn==1.5.0
 websocket-client==1.8.0
 flask==3.0.3
-python-telegram-bot==20.6
