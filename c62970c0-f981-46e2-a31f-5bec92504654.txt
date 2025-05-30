@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+price_history.csv
+authorized_chats.json
+.env
