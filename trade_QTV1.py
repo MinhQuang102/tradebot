@@ -29,7 +29,7 @@ def create_default_config():
         "TELEGRAM_TOKEN": "7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk",
         "ALLOWED_CHAT_ID": "-1002554202438",
         "VALID_KEY": "10092006",
-        "NEWS_API_KEY": "af9b016f3f044a6f84453bbe1a526f0b",
+        "NEWS_API_KEY": "af9b016f3f044a6f84453bbe1a526f0b"
     }
     try:
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -588,8 +588,9 @@ def save_to_csv(price, trend, win_rate, market_status, chat_id):
 def get_help_text():
     return """
 Danh sách các lệnh hỗ trợ:
+- /ping: Kiểm tra xem bot có hoạt động và gửi tin nhắn được không.
 - /key <key>: Nhập key để cấp quyền sử dụng bot cho đoạn chat này (ví dụ: /key ABC).
-- /set_up <phân_tích> <chờ kết quả> <bắt đầu> <kết thúc>: Tùy chỉnh tự động phân tích (phân tích bao nhiêu giây, chờ kết quả bao nhiêu giây, bắt đầu lúc nào, dừng lúc nào). Ví dụ: /set_up 50 70 21:30 23:30
+- /set_up <phân_tích> <chờ kết quả> <bắt đầu> <kết thúc>: Tùy chỉnh tự động phân tích (phân tích bao nhiêu giây, chờ kết quả bao nhiêu giây, bắt đầu lúc nào, dừng lúc nào). Ví dụ: /set_up 50 70 14:55 15:05
 - /stop: Dừng lệnh /set_up
 - /cskh: Liên hệ hỗ trợ qua Telegram
 - /help: Hiển thị danh sách các lệnh này
@@ -604,12 +605,26 @@ def parse_time_to_seconds(time_str):
         hours, minutes = map(int, time_str.split(':'))
         return hours * 3600 + minutes * 60
     except ValueError:
-        raise ValueError("Định dạng thời gian không hợp lệ. Vui lòng dùng HH:MM (ví dụ: 21:30).")
+        raise ValueError("Định dạng thời gian không hợp lệ. Vui lòng dùng HH:MM (ví dụ: 14:55).")
 
 # --- Get Current Time in Seconds ---
 def current_time_in_seconds():
     now = datetime.now()
     return now.hour * 3600 + now.minute * 60 + now.second
+
+# --- Ping Command ---
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    logger.info(f"Processing ping command for chat_id: {chat_id}")
+    try:
+        await update.message.reply_text(f"Pong! Bot đang hoạt động. Chat ID: {chat_id}")
+        logger.info(f"Ping message sent successfully to chat {chat_id}")
+    except TelegramError as e:
+        logger.error(f"Failed to send ping message to chat {chat_id}: {e}")
+        try:
+            await update.message.reply_text(f"Lỗi khi gửi thông báo: {str(e)}. Vui lòng kiểm tra token hoặc quyền truy cập chat.")
+        except TelegramError as e2:
+            logger.error(f"Failed to send error message to chat {chat_id}: {e2}")
 
 # --- Analyze Market ---
 async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, analysis_duration=50):
@@ -623,8 +638,11 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
         return
     
     if is_analyzing:
-        await update.message.reply_text("Phân tích đang diễn ra, vui lòng đợi.")
-        logger.info(f"Analysis already in progress for chat {chat_id}")
+        try:
+            await update.message.reply_text("Phân tích đang diễn ra, vui lòng đợi.")
+            logger.info(f"Analysis already in progress for chat {chat_id}")
+        except TelegramError as e:
+            logger.error(f"Failed to send 'analysis in progress' message to chat {chat_id}: {e}")
         return
 
     is_analyzing = True
@@ -662,8 +680,11 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
         is_analyzing = False
 
     if not temp_prices:
-        await update.message.reply_text("Không thể lấy dữ liệu từ BTC hoặc COINCEX. Lỗi 451 - Có thể do mạng bị chặn. Vui lòng thử lại hoặc sử dụng VPN.")
-        logger.error(f"No data collected for analysis in chat {chat_id}")
+        try:
+            await update.message.reply_text("Không thể lấy dữ liệu từ BTC hoặc COINCEX. Lỗi 451 - Có thể do mạng bị chặn. Vui lòng thử lại hoặc sử dụng VPN.")
+            logger.error(f"No data collected for analysis in chat {chat_id}")
+        except TelegramError as e:
+            logger.error(f"Failed to send 'no data' message to chat {chat_id}: {e}")
         return
 
     latest_price = temp_prices[-1]
@@ -747,11 +768,14 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
 
     try:
         await update.message.reply_text(report)
-        logger.info(f"Analysis report sent to chat {chat_id}")
+        logger.info(f"Analysis report sent successfully to chat {chat_id}")
         save_to_csv(latest_price, trend, win_rate, support_resistance_signal, chat_id)
     except TelegramError as e:
-        logger.error(f"Error sending Telegram message to {chat_id}: {e}")
-        await update.message.reply_text("Lỗi khi gửi báo cáo. Vui lòng thử lại hoặc liên hệ @mekiemtien102.")
+        logger.error(f"Failed to send analysis report to chat {chat_id}: {e}")
+        try:
+            await update.message.reply_text(f"Lỗi khi gửi báo cáo: {str(e)}. Vui lòng kiểm tra token hoặc quyền truy cập chat.")
+        except TelegramError as e2:
+            logger.error(f"Failed to send error message to chat {chat_id}: {e2}")
 
 # --- Set Up Callback ---
 async def set_up_callback(context: ContextTypes.DEFAULT_TYPE):
@@ -781,7 +805,7 @@ async def set_up_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if len(context.args) != 4:
-        await update.message.reply_text("Vui lòng cung cấp đúng định dạng: /set_up <phân_tích> <chờ kết quả> <bắt đầu> <kết thúc>\nVí dụ: /set_up 50 70 21:30 23:30")
+        await update.message.reply_text("Vui lòng cung cấp đúng định dạng: /set_up <phân_tích> <chờ kết quả> <bắt đầu> <kết thúc>\nVí dụ: /set_up 50 70 14:55 15:05")
         return
 
     try:
@@ -901,21 +925,21 @@ def main():
     try:
         logger.info("Loading authorized chats...")
         load_authorized_chats()
+        logger.info(f"Authorized chats loaded: {authorized_chats}")
         logger.info("Starting CoinCEX WebSocket...")
         start_websocket()
         logger.info("Initializing Telegram bot...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
         logger.info("Bot initialized. Adding handlers...")
-
         application.add_handler(CommandHandler("set_up", set_up_command))
         application.add_handler(CommandHandler("stop", stop_command))
         application.add_handler(CommandHandler("cskh", cskh_command))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("key", key_command))
+        application.add_handler(CommandHandler("ping", ping_command))
         logger.info("Handlers added. Starting polling...")
-
         application.run_polling()
-        logger.info("Bot is running.")
+        logger.info("Bot is running and polling for updates.")
     except TelegramError as e:
         logger.error(f"Telegram bot error: {e}")
         raise
