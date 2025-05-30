@@ -15,7 +15,6 @@ import logging
 import websocket
 import threading
 from flask import Flask
-import os
 
 # --- Setup Logging ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -122,11 +121,12 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.effective_user.id
     current_time = time.time()
     
-    # Allow default chat ID without admin check
+    logger.info(f"Checking permissions for chat_id: {chat_id}, user_id: {user_id}")
+    
     if chat_id == ALLOWED_CHAT_ID:
+        logger.info(f"Chat {chat_id} is allowed by default.")
         return True
     
-    # Check if the chat is a group or supergroup
     if update.effective_chat.type in ['group', 'supergroup']:
         try:
             member = await update.effective_chat.get_member(user_id)
@@ -139,18 +139,18 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text("Lỗi khi kiểm tra quyền quản trị viên. Vui lòng thử lại hoặc liên hệ @mekiemtien102.")
             return False
     
-    # Check if the chat is authorized
     if authorized_chats and chat_id in authorized_chats:
         auth_info = authorized_chats[chat_id]
         if current_time - auth_info["timestamp"] < 24 * 3600:
+            logger.info(f"Chat {chat_id} is authorized.")
             return True
         else:
             del authorized_chats[chat_id]
             save_authorized_chats()
     
-    # If not authorized, prompt for key
     try:
         await update.message.reply_text("Đoạn chat này không có quyền sử dụng bot. Vui lòng nhập key bằng lệnh /key <key>. Liên hệ @mekiemtien102 để được hỗ trợ.")
+        logger.warning(f"Chat {chat_id} is not authorized.")
     except TelegramError as e:
         logger.error(f"Error sending unauthorized message to chat {chat_id}: {e}")
     return False
@@ -159,6 +159,8 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     current_time = time.time()
+    
+    logger.info(f"Processing key command for chat_id: {chat_id}")
     
     if chat_id == ALLOWED_CHAT_ID:
         await update.message.reply_text("Đoạn chat này đã được cấp quyền mặc định và không cần nhập key.")
@@ -302,6 +304,7 @@ def get_btc_price_and_volume():
             low_history = low_history[-MAX_HISTORY:]
             open_history = open_history[-MAX_HISTORY:]
             
+            logger.debug(f"Fetched from CoinCEX: price={latest_price}, volume={latest_volume}")
             return latest_price, latest_volume, price_history, volume_history, high_history, low_history, open_history
         else:
             response = requests.get(KRAKEN_OHLC_URL, timeout=10)
@@ -331,6 +334,7 @@ def get_btc_price_and_volume():
             low_history = lows[-MAX_HISTORY:]
             open_history = opens[-MAX_HISTORY:]
             
+            logger.debug(f"Fetched from Kraken: price={latest_price}, volume={latest_volume}")
             return latest_price, latest_volume, prices, volumes, highs, lows, opens
     except requests.exceptions.HTTPError as e:
         logger.error(f"Kraken API error: {e}")
@@ -612,11 +616,15 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
     global price_history, volume_history, high_history, low_history, open_history, is_analyzing
     chat_id = str(update.effective_chat.id)
 
+    logger.info(f"Starting market analysis for chat_id: {chat_id}")
+    
     if not await is_allowed_chat(update, context):
+        logger.warning(f"Chat {chat_id} not allowed to proceed with analysis.")
         return
     
     if is_analyzing:
         await update.message.reply_text("Phân tích đang diễn ra, vui lòng đợi.")
+        logger.info(f"Analysis already in progress for chat {chat_id}")
         return
 
     is_analyzing = True
@@ -630,6 +638,7 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
     try:
         while time.time() - start_time < max(analysis_duration, MIN_ANALYSIS_DURATION):
             if context.bot_data.get('stopping', False):
+                logger.info(f"Stopping analysis for chat {chat_id} due to stop signal.")
                 break
             latest_price, latest_volume, prices, volumes, highs, lows, opens = get_btc_price_and_volume()
             if latest_price is not None:
@@ -643,14 +652,18 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
                 high_history = highs[-MAX_HISTORY:]
                 low_history = lows[-MAX_HISTORY:]
                 open_history = opens[-MAX_HISTORY:]
+                logger.debug(f"Collected data: price={latest_price}, volume={latest_volume}")
             else:
                 logger.warning("Failed to fetch data in this iteration.")
             await asyncio.sleep(1)
+    except Exception as e:
+        logger.error(f"Error during analysis loop for chat {chat_id}: {e}")
     finally:
         is_analyzing = False
 
     if not temp_prices:
         await update.message.reply_text("Không thể lấy dữ liệu từ BTC hoặc COINCEX. Lỗi 451 - Có thể do mạng bị chặn. Vui lòng thử lại hoặc sử dụng VPN.")
+        logger.error(f"No data collected for analysis in chat {chat_id}")
         return
 
     latest_price = temp_prices[-1]
@@ -738,13 +751,14 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
         save_to_csv(latest_price, trend, win_rate, support_resistance_signal, chat_id)
     except TelegramError as e:
         logger.error(f"Error sending Telegram message to {chat_id}: {e}")
-        await update.message.reply_text("Lỗi khi gửi báo cáo. Vui lòng thử lại.")
+        await update.message.reply_text("Lỗi khi gửi báo cáo. Vui lòng thử lại hoặc liên hệ @mekiemtien102.")
 
 # --- Set Up Callback ---
 async def set_up_callback(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.data['chat_id']
     update = context.job.data['update']
     analysis_duration = context.job.data['analysis_duration']
+    logger.info(f"Executing set_up_callback for chat_id: {chat_id}")
     await analyze_market(update, context, analysis_duration)
 
 # --- Send Start Trade Message ---
@@ -752,6 +766,7 @@ async def send_start_trade_message(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.data['chat_id']
     try:
         await context.bot.send_message(chat_id=chat_id, text="BẮT ĐẦU TRADE NÀO")
+        logger.info(f"Sent start trade message to chat {chat_id}")
     except TelegramError as e:
         logger.error(f"Error sending start trade message to {chat_id}: {e}")
 
@@ -760,6 +775,7 @@ async def set_up_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_allowed_chat(update, context):
         return
     chat_id = str(update.effective_chat.id)
+    logger.info(f"Processing set_up command for chat_id: {chat_id}")
     if chat_id in set_up_jobs:
         await update.message.reply_text("Lệnh /set_up đã đang chạy. Dùng /stop để dừng trước khi chạy lại.")
         return
@@ -794,6 +810,7 @@ async def set_up_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         duration = end_seconds - start_seconds
 
         await update.message.reply_text(f"Bắt đầu tự động phân tích từ {start_time} đến {end_time}, phân tích {analysis_duration} giây, chờ kết quả {rest_duration} giây mỗi chu kỳ. Dùng /stop để dừng.")
+        logger.info(f"Scheduled analysis for chat {chat_id} from {start_time} to {end_time}")
 
         if delay >= 10:
             context.job_queue.run_once(
@@ -804,6 +821,7 @@ async def set_up_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await context.bot.send_message(chat_id=chat_id, text="BẮT ĐẦU TRADE NÀO")
+            logger.info(f"Immediate start trade message sent to chat {chat_id}")
 
         job = context.job_queue.run_repeating(
             callback=set_up_callback,
@@ -820,23 +838,28 @@ async def set_up_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         set_up_jobs[chat_id] = job
+        logger.info(f"Job scheduled for chat {chat_id} with interval {interval} seconds")
 
     except ValueError as e:
         await update.message.reply_text(f"Lỗi: {str(e)}. Vui lòng kiểm tra định dạng thời gian (HH:MM).")
+        logger.error(f"ValueError in set_up command for chat {chat_id}: {e}")
     except Exception as e:
         await update.message.reply_text(f"Lỗi không xác định: {str(e)}")
+        logger.error(f"Unexpected error in set_up command for chat {chat_id}: {e}")
 
 # --- Stop Command ---
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_allowed_chat(update, context):
         return
     chat_id = str(update.message.chat_id)
+    logger.info(f"Processing stop command for chat_id: {chat_id}")
     stopped = False
     if chat_id in set_up_jobs:
         await stop_set_up(context, chat_id)
         stopped = True
     if not stopped:
         await update.message.reply_text("Không có lệnh tự động nào đang chạy (/set_up).")
+        logger.info(f"No active jobs found for chat {chat_id}")
 
 # --- CSKH Command ---
 async def cskh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -844,6 +867,7 @@ async def cskh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     support_message = "Cần hỗ trợ? Liên hệ qua Telegram: @mekiemtien102"
     await update.message.reply_text(support_message)
+    logger.info(f"Sent support message to chat {update.effective_chat.id}")
 
 # --- Help Command ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -851,6 +875,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     help_text = get_help_text()
     await update.message.reply_text(help_text)
+    logger.info(f"Sent help message to chat {update.effective_chat.id}")
 
 # --- Stop Set Up ---
 async def stop_set_up(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
@@ -859,6 +884,7 @@ async def stop_set_up(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
         del set_up_jobs[chat_id]
         try:
             await context.bot.send_message(chat_id=chat_id, text="Đã dừng tự động phân tích (/set_up).")
+            logger.info(f"Stopped analysis job for chat {chat_id}")
         except TelegramError as e:
             logger.error(f"Error sending stop message to {chat_id}: {e}")
 
@@ -873,24 +899,23 @@ async def start_bot(app: Application):
 # --- Main Function ---
 def main():
     try:
-        print("Loading authorized chats...")
+        logger.info("Loading authorized chats...")
         load_authorized_chats()
-        print("Starting CoinCEX WebSocket...")
+        logger.info("Starting CoinCEX WebSocket...")
         start_websocket()
-        print("Initializing Telegram bot...")
+        logger.info("Initializing Telegram bot...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
-        print("Bot initialized. Adding handlers...")
+        logger.info("Bot initialized. Adding handlers...")
 
         application.add_handler(CommandHandler("set_up", set_up_command))
         application.add_handler(CommandHandler("stop", stop_command))
         application.add_handler(CommandHandler("cskh", cskh_command))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("key", key_command))
-        print("Handlers added. Starting polling...")
+        logger.info("Handlers added. Starting polling...")
 
         application.run_polling()
-        print("Bot is running.")
-
+        logger.info("Bot is running.")
     except TelegramError as e:
         logger.error(f"Telegram bot error: {e}")
         raise
