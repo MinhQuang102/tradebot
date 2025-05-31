@@ -1,0 +1,5 @@
+config.json
+authorized_chats.json
+price_history.csv
+__pycache__/
+*.pyc
