@@ -19,57 +19,26 @@ from aiohttp import web
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Load or Create Configuration ---
-CONFIG_FILE = "config.json"
-AUTHORIZED_CHATS_FILE = "authorized_chats.json"
-HISTORY_FILE = "price_history.csv"
-MAX_HISTORY = 100
-
-def create_default_config():
-    default_config = {
-        "TELEGRAM_TOKEN": "7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk",
-        "ALLOWED_CHAT_ID": "-1002554202438",
-        "VALID_KEY": "10092006",
-        "NEWS_API_KEY": "af9b016f3f044a6f84453bbe1a526f0b"
-    }
-    try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(default_config, f, indent=4)
-        logger.warning("Created default config.json with hardcoded values.")
-    except Exception as e:
-        logger.error(f"Error creating default config.json: {e}")
-    return default_config
-
+# --- Load Configuration from Environment Variables ---
 try:
-    if os.path.exists(CONFIG_FILE):
-        if os.path.getsize(CONFIG_FILE) == 0:
-            logger.warning(f"config.json is empty, creating default config.")
-            config = create_default_config()
-        else:
-            try:
-                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-            except json.JSONDecodeError as e:
-                logger.error(f"config.json is malformed: {e}. Creating default config.")
-                config = create_default_config()
-    else:
-        logger.warning(f"config.json does not exist. Creating default config.")
-        config = create_default_config()
+    TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+    ALLOWED_CHAT_ID = os.environ.get('ALLOWED_CHAT_ID')
+    VALID_KEY = os.environ.get('VALID_KEY', '10092006')
+    NEWS_API_KEY = os.environ.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
     
-    TELEGRAM_TOKEN = config.get('TELEGRAM_TOKEN')
-    ALLOWED_CHAT_ID = config.get('ALLOWED_CHAT_ID')
-    VALID_KEY = config.get('VALID_KEY', '10092006')
-    NEWS_API_KEY = config.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
     if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
-        raise ValueError("TELEGRAM_TOKEN or ALLOWED_CHAT_ID missing in config.json")
+        raise ValueError("TELEGRAM_TOKEN or ALLOWED_CHAT_ID missing in environment variables")
 except Exception as e:
-    logger.error(f"Error loading config: {e}")
+    logger.error(f"Error loading environment variables: {e}")
     raise
 
 # --- Constants ---
 KRAKEN_OHLC_URL = 'https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1'
 WEBHOOK_PORT = int(os.environ.get("PORT", 8080))
 WEBHOOK_PATH = "/webhook"
+AUTHORIZED_CHATS_FILE = "authorized_chats.json"
+HISTORY_FILE = "price_history.csv"
+MAX_HISTORY = 100
 
 # --- Global Variables ---
 price_history = []
@@ -174,9 +143,7 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     provided_key = context.args[0]
     try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        valid_key = config.get('VALID_KEY', '10092006')
+        valid_key = os.environ.get('VALID_KEY', '10092006')
         
         if chat_id in authorized_chats:
             auth_info = authorized_chats[chat_id]
