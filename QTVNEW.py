@@ -1,4 +1,3 @@
-```python
 import asyncio
 import requests
 import json
@@ -9,8 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler
-from telegram.ext import filters
+from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 from telegram.error import TelegramError
 import time
 import logging
@@ -114,11 +112,11 @@ def load_authorized_chats():
 
 # --- Notify Error to Admin ---
 async def notify_error(context, chat_id: str, error: str):
+    if not context:
+        logger.warning("Context is None, cannot send error notification")
+        return
     try:
-        if context:
-            await context.bot.send_message(chat_id=chat_id, text=f"Lỗi bot: {error}")
-        else:
-            logger.warning("Context is None, cannot send error notification")
+        await context.bot.send_message(chat_id=chat_id, text=f"Lỗi bot: {error}")
     except TelegramError as e:
         logger.error(f"Không thể gửi thông báo lỗi: {e}")
 
@@ -224,7 +222,7 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if authorized_chats[chat_id]["key_attempts"] >= 2:
                     authorized_chats[chat_id]["banned"] = True
             save_authorized_chats()
-            await update.message.reply_text("Key không hợp lệ. Vui lòng thử lại. (Còn {} lần thử)".format(2 - authorized_chats[chat_id]["key_attempts"]))
+            await update.message.reply_text(f"Key không hợp lệ. Vui lòng thử lại. (Còn {2 - authorized_chats[chat_id]['key_attempts']} lần thử)")
             logger.warning(f"Chat {chat_id} attempted to use invalid key: {provided_key}")
     except Exception as e:
         logger.error(f"Error processing key command in chat {chat_id}: {e}")
@@ -243,7 +241,7 @@ async def remove_authorization(context: ContextTypes.DEFAULT_TYPE, chat_id: str)
             await notify_error(context, ALLOWED_CHAT_ID, f"Error sending expiration message to chat {chat_id}: {e}")
 
 # --- Get BTC Price and Volume with Retry ---
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(5), before_sleep=lambda retry_state: logger.warning(f"Retrying Kraken API call {retry_state.attempt_number}/3..."))
+@retry(stop=stop_after_attempt(5), wait=wait_fixed(5), before_sleep=lambda retry_state: logger.warning(f"Retrying Kraken API call {retry_state.attempt_number}/5..."))
 def get_btc_price_and_volume():
     global price_history, volume_history, high_history, low_history, open_history
     try:
@@ -410,14 +408,14 @@ def calculate_stochastic(prices, highs, lows, k_period=14, d_period=3):
         if high_max == low_min:
             k_value = 50
         else:
-            k_value = 100 * (prices[-1] - prices_low_min) / (high_max - low_min)
+            k_value = 100 * (prices[-1] - low_min) / (high_max - low_min)
         k_values = []
         for i in range(d_period):
             if len(prices[:-i]) >= k_period:
-                low_min = min(lows[-k_period-i:-i]) if lows[-k_period-i:-i] else low_min
-                high_max = max(highs[-k_period-i:-i]) if highs[-k_period-i:-i] else high_max
-                if high_max != low_min:
-                    k = 100 * (prices[-1-i] - low_min) / (high_max - low)
+                low_min_i = min(lows[-k_period-i:-i]) if lows[-k_period-i:-i] else low_min
+                high_max_i = max(highs[-k_period-i:-i]) if highs[-k_period-i:-i] else high_max
+                if high_max_i != low_min_i:
+                    k = 100 * (prices[-1-i] - low_min_i) / (high_max_i - low_min_i)
                     k_values.append(k)
         d_value = np.mean([k_value] + k_values) if k_values else None
         return k_value, d_value
@@ -439,7 +437,7 @@ def calculate_bollinger_bands(prices, period=20, num_std=2):
         logger.error(f"Error calculating Bollinger Bands: {e}")
         return None, None, None
 
-# --- Detect candlestick patterns ---
+# --- Detect Candlestick Patterns ---
 def detect_candlestick_pattern(highs, lows, opens, closes):
     if len(closes) < 2:
         return None
@@ -494,7 +492,7 @@ def predict_price_rf(prices, volumes, highs, lows):
             'high': highs[-30:],
             'low': lows[-30:],
             'atr': [atr_value] * 30 if atr_value is not None else [0] * 30,
-            'vwap': [vwap_value] * 30 if volumes is not None else [0] * 30
+            'vwap': [vwap_value] * 30 if vwap_value is not None else [0] * 30
         })
         df['price'] = df['price'].ffill().fillna(0)
         df['price_diff'] = df['price'].diff()
@@ -505,20 +503,16 @@ def predict_price_rf(prices, volumes, highs, lows):
         X = X.iloc[:-1]
         if len(X) < 10:
             return None
-        try:
-            model = RandomForestRegressor(n_estimators=100, random_state=42)
-            logger.info("Training Random Forest model...")
-            model.fit(X, y)
-            next_data = X.iloc[-1:].values
-            return model.predict(next_data)[0]
-        except Exception as e:
-            logger.error(f"Error in Random Forest training/prediction: {e}")
-            return None
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        logger.info("Training Random Forest model...")
+        model.fit(X, y)
+        next_data = X.iloc[-1:].values
+        return model.predict(next_data)[0]
     except Exception as e:
         logger.error(f"Error predicting price with Random Forest: {e}")
         return None
 
-# --- Detect support and resistance ---
+# --- Detect Support and Resistance ---
 def detect_support_resistance(price):
     global support_level, resistance_level
     try:
@@ -577,7 +571,7 @@ async def set_up(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if auth_info.get("banned", False):
             auth_status = "Đã bị cấm do nhập sai key quá số lần cho phép"
         elif auth_info.get("key_used", False) and current_time - auth_info["timestamp"] < 24 * 3600:
-            auth_status = "Đã được ủy quyền (hết hạn sau {:.1f} giờ)".format((24 * 3600 - (current_time - auth_info["timestamp"])) / 3600)
+            auth_status = f"Đã được ủy quyền (hết hạn sau {format_value((24 * 3600 - (current_time - auth_info['timestamp'])) / 3600, 1)} giờ)"
     
     api_status = "Chưa cài đặt API Key/Secret"
     if context.user_data.get('api_key') and context.user_data.get('api_secret'):
@@ -707,13 +701,11 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         win_rate_str = format_value(win_rate)
 
         report = (
-            f"""
-🏗🏗️🏗️ COINCEX — BTC/USD 🌐
-Time: {datetime.now().strftime("%H:%M:%S %d-%m-%Y")}
-Lệnh: {trend}
-Tỷ lệ thắng: {win_rate_str}%
-Giá hiện tại: {latest_price_str} USD
-            """
+            f"🏗️ COINCEX — BTC/USD 🌐\n"
+            f"Time: {datetime.now().strftime('%H:%M:%S %d-%m-%Y')}\n"
+            f"Lệnh: {trend}\n"
+            f"Tỷ lệ thắng: {win_rate_str}%\n"
+            f"Giá hiện tại: {latest_price_str} USD"
         )
 
         try:
@@ -728,7 +720,7 @@ Giá hiện tại: {latest_price_str} USD
         logger.error(f"Error in signals command: {e}")
         await update.message.reply_text("Lỗi khi xử lý tín hiệu. Vui lòng thử lại.")
         await notify_error(context, ALLOWED_CHAT_ID, f"Error in signals command: {e}")
-    finally except:
+    finally:
         is_analyzing = False
 
 # --- Settings Command ---
@@ -771,7 +763,7 @@ async def webhook_handler(request):
         if data:
             update = Update.de_json(data, application.bot)
             if update:
-                await application.process_update(update, update)
+                await application.process_update(update)
         return web.Response(text="OK")
     except Exception as e:
         logger.error(f"Error processing webhook: {e}")
@@ -779,16 +771,16 @@ async def webhook_handler(request):
             await notify_error(application, ALLOWED_CHAT_ID, f"Webhook error: {e}")
         return web.Response(text="OK", status=200)
 
-# --- Setup Webhook ---
+# --- Setup Webhook Server ---
 async def setup_webhook():
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, webhook_handler)
     app.router.add_get('/health', health_check)
-    runner = await web.AppRunner(app)
+    runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0', 0.0, '.WEBHOOK_PORT)
+    site = web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT)
     await site.start()
-    logger.info(f"{Webhook} server started on http://0.0.0.0:port {WEBHOOK_PORT}}")
+    logger.info(f"Webhook server started on http://0.0.0.0:{WEBHOOK_PORT}")
 
 # --- Validate Telegram Token ---
 async def validate_token(token: str) -> bool:
@@ -797,52 +789,54 @@ async def validate_token(token: str) -> bool:
         await bot.get_me()
         return True
     except TelegramError as e:
-        logger.error(f"Invalid token Telegram token: {e}")
+        logger.error(f"Invalid Telegram token: {e}")
         return False
 
 # --- Main Function ---
 async def main():
     global application
-    if not await not validate_token(TELEGRAM_TOKEN):
-        logger.error("Cannot start bot cannot start due to an invalid Telegram token.")
+    if not await validate_token(TELEGRAM_TOKEN):
+        logger.error("Bot cannot start due to invalid Telegram token.")
         return
     
     try:
-        print("Loading authorized chats...")
+        logger.info("Loading authorized chats...")
         load_authorized_chats()
-        logger.info(("Authorized chats loaded successfully.")
-        print(("Initializing Telegram bot...")
+        logger.info("Authorized chats loaded successfully.")
+        logger.info("Initializing Telegram bot...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-        print("Adding handlers...")
-        logger.handlersinfo("Adding command handlers...")
-        application.add_handler(CommandHandler(("start", start))
-        application.add_handler(CommandHandler(("set_up", "set_up"))
-        application.add_handler(CommandHandler("help", "help_command))
-        application.add_handler(CommandHandler(("cskh", cskh))
-        application.add_handler(CommandHandler(("signals", signals))
-        application.add_handler(CommandHandler(("key", key_command))
+        logger.info("Adding command handlers...")
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("set_up", set_up))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("cskh", cskh))
+        application.add_handler(CommandHandler("signals", signals))
+        application.add_handler(CommandHandler("key", key_command))
         application.add_handler(ConversationHandler(
-            entry_points=[{CommandHandler("settings", settings)}],
+            entry_points=[CommandHandler("settings", settings)],
             states={
-                API_KEY,: [[MessageHandler((filters.TEXT, & (~filters.COMMAND), get_api_key)]),
-                API_SECRET,: [[]MessageHandler(filters.Text & ~filters.COMMAND, get_api_secret)]
+                API_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_api_key)],
+                API_SECRET: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_api_secret)]
             },
-            fallbacks=[CommandHandler(("cancel", cancel)]),
+            fallbacks=[CommandHandler("cancel", cancel)]
         ))
 
-        logger.info(("Handlers added successfully.")
-        print(("Setting up webhook...")
-        webhook_url = os.environ.get(("WEBHOOK_URL", "") or f"https://your-render-app.onrender.com{WEBHOOK_PATH}"
+        logger.info("Handlers added successfully.")
+        logger.info("Setting up webhook...")
+        webhook_url = os.environ.get("WEBHOOK_URL", "")
+        if not webhook_url:
+            logger.error("WEBHOOK_URL not set in environment variables.")
+            return
         try:
             await application.bot.set_webhook(webhook_url)
-            logger.info(f"Successfully set to webhook set to: {webhook_url}")
+            logger.info(f"Successfully set webhook to: {webhook_url}")
         except TelegramError as e:
             logger.error(f"Failed to set webhook: {e}")
             await notify_error(None, ALLOWED_CHAT_ID, f"Failed to set webhook: {e}")
             return
 
-        await application.initialize()()
+        await application.initialize()
         await application.start()
         await setup_webhook()
 
@@ -851,7 +845,7 @@ async def main():
             stop_event = asyncio.Event()
             await stop_event.wait()
         except KeyboardInterrupt:
-            logger.info(("Received shutdown signal, stopping bot...")
+            logger.info("Received shutdown signal, stopping bot...")
         finally:
             logger.info("Shutting down application...")
             try:
@@ -862,15 +856,15 @@ async def main():
                 logger.info("Bot shutdown completed successfully.")
             except Exception as e:
                 logger.error(f"Error during shutdown: {e}")
-
-except Exception except as e:
-    logger.error(f"Failed to run bot: {e}")
-    await notify_error(None, ALLOWED_CHAT_ID, None, f"Failed to start bot: {e}")
+    except Exception as e:
+        logger.error(f"Failed to run bot: {e}")
+        await notify_error(None, ALLOWED_CHAT_ID, f"Failed to start bot: {e}")
 
 # --- Run the bot ---
 if __name__ == '__main__':
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         loop.run_until_complete(main())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user.")
@@ -878,85 +872,12 @@ if __name__ == '__main__':
         logger.error(f"Error running bot: {e}")
     finally:
         if loop.is_running():
-            pending = asyncio.all_tasks(loop=loop=loop)
+            pending = asyncio.all_tasks(loop=loop)
             for task in pending:
                 task.cancel()
             try:
-                loop.run_until_complete(loop.shutdown_asyncgens())()
-            except:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
                 pass
             loop.close()
         logger.info("Application fully terminated.")
-```
-
-### Hướng dẫn triển khai trên Render
-Để bot chạy 24/24 và không dừng sau 15 phút, hãy triển khai theo các bước sau:
-
-1. **Chuẩn bị tệp mã nguồn**:
-   - **Tạo file `requirements.txt`**:
-     ```txt
-     python-telegram-bot==20.2
-     requests==2.31.0
-     numpy==1.26.3
-     pandas==2.2.2
-     scikit-learn==1.4.2
-     tenacity==6.0.0
-     aiohttp==3.9.1
-     ```
-   - **Cấu trúc thư mục**:
-     ```
-     project/
-     ├── trade_NEWQTV.py
-     ├── requirements.txt
-     └── config.json (tùy chọn)
-     ```
-
-2. **Push mã lên GitHub**:
-   - Tạo kho GitHub mới.
-   - Push `trade_NEWQTV.py`, `requirements.txt` và `config.json` (nếu có) lên kho.
-
-3. **Tạo Web Service trên Render**:
-   - **Đăng ký**: Truy cập [render.com](https://render.com), và tạo tài khoản (gói miễn phí đủ dùng).
-   - **Tạo dịch vụ**:
-     - Chọn **Web Service**, liên kết với kho GitHub.
-     - Cấu hình:
-       - **Runtime**: Python
-       - **Build Command**: `pip install -r requirements.txt`
-       - **Start Command**: `python trade_NEWQTV.py`
-       - **Environment Variables**:
-         - `TELEGRAM_TOKEN`: Token của bot (ví dụ: `7608384401:AAHKfX5KlBl5CZ...`).
-         - `WEBHOOK_URL`: `https://your-render-app-name.onrender.com/webhook` (thay bằng URL sau khi triển khai).
-         - `NEWS_API_KEY`: API key của bạn (nếu cần).
-         - `PORT`: 8080
-   - **Triển khai**: Nhấn **Deploy** để cài đặt và chạy bot. Sau khi triển khai, cập nhật `WEBHOOK_URL` trong biến môi trường với URL thực tế.
-
-4. **Cấu hình UptimeRobot**:
-   - Để tránh Render tạm dừng bot, dùng UptimeRobot để ping endpoint `/health`:
-     1. Truy cập [uptimerobot.com](https://uptimerobot.com), đăng ký.
-     2. Tạo monitor:
-        - **Type**: HTTP(s)
-        - **URL**: `https://your-render-app-name.onrender.com/health`
-        - **Interval**: 5 phút
-   - Điều này giữ bot hoạt động liên tục.
-
-5. **Kiểm tra bot**:
-   - Gửi `/start` hoặc `/signals` trên Telegram.
-   - Kiểm tra log trên dashboard Render:
-     - Log nên hiển thị: `Successfully set webhook to: https://your-render-app-name.onrender.com/webhook` và `Webhook server started on http://0.0.0.0:8080`.
-   - Nếu lỗi, kiểm tra log để xác định vấn đề (token sai, webhook URL không hợp lệ, v.v.).
-
-### Tại sao mã này khắc phục lỗi?
-- **Webhook**: Bot chỉ chạy khi có tin nhắn, giảm tiêu tốn tài nguyên, tránh timeout.
-- **Timeout API**: Timeout Kraken tăng lên 30 giây, retry interval 5 giây.
-- **Quản lý tài nguyên**: Giới hạn `price_history` và các danh sách khác bằng `MAX_HISTORY`.
-- **Giám sát**: Endpoint `/health` và UptimeRobot giữ bot hoạt động. Hàm `notify_error` gửi cảnh báo lỗi.
-- **Shutdown an toàn**: Xử lý graceful shutdown để tránh crash.
-
-### Lưu ý
-- **Cập nhật `WEBHOOK_URL`**: Sau khi triển khai, lấy URL từ Render và cập nhật biến môi trường.
-- **Sao lưu**: Lưu `price_history.csv` và `authorized_chats.json` lên GitHub hoặc Google Drive.
-- **Debug**:
-  - Nếu bot không chạy, kiểm tra log Render.
-  - Gửi log lỗi hoặc mô tả chi tiết để tôi hỗ trợ.
-
-Bạn có cần hỗ trợ thêm về cấu hình Render, UptimeRobot, hay debug lỗi cụ thể không?
