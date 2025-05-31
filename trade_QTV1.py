@@ -14,6 +14,7 @@ from telegram.error import TelegramError
 import time
 import logging
 from tenacity import retry, stop_after_attempt, wait_fixed
+from aiohttp import web
 
 # --- Setup Logging ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -65,6 +66,8 @@ except Exception as e:
 
 # --- Constants ---
 KRAKEN_OHLC_URL = 'https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1'
+WEBHOOK_PORT = int(os.environ.get("PORT", 8080))  # Render uses PORT env variable
+WEBHOOK_PATH = "/webhook"
 
 # --- Global Variables ---
 price_history = []
@@ -76,6 +79,7 @@ support_level = None
 resistance_level = None
 authorized_chats = {}
 is_analyzing = False
+application = None  # Global application instance for webhook
 
 # --- Save and Load Authorized Chats ---
 def save_authorized_chats():
@@ -107,6 +111,13 @@ def load_authorized_chats():
         logger.error(f"Error loading authorized_chats: {e}")
         authorized_chats = {}
 
+# --- Notify Error to Admin ---
+async def notify_error(context: ContextTypes.DEFAULT_TYPE, chat_id: str, error: str):
+    try:
+        await context.bot.send_message(chat_id=ALLOWED_CHAT_ID, text=f"Lỗi bot: {error}")
+    except TelegramError as e:
+        logger.error(f"Không thể gửi thông báo lỗi: {e}")
+
 # --- Check if chat_id is allowed and user is admin in group ---
 async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = str(update.effective_chat.id)
@@ -133,6 +144,7 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 except TelegramError as e:
                     logger.error(f"Error checking admin status for user {user_id} in chat {chat_id}: {e}")
                     await update.message.reply_text("Lỗi khi kiểm tra quyền quản trị viên. Vui lòng thử lại.")
+                    await notify_error(context, ALLOWED_CHAT_ID, f"Error checking admin status in chat {chat_id}: {e}")
                     return False
             return True
         else:
@@ -181,7 +193,7 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if provided_key == valid_key:
             authorized_chats.clear()
             authorized_chats[chat_id] = {
-                "(timestamp": current_time,
+                "timestamp": current_time,
                 "key_attempts": 1,
                 "key_used": True,
                 "banned": False
@@ -213,6 +225,7 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error processing key command in chat {chat_id}: {e}")
         await update.message.reply_text("Lỗi khi xử lý key. Vui lòng thử lại.")
+        await notify_error(context, ALLOWED_CHAT_ID, f"Error in key command for chat {chat_id}: {e}")
 
 async def remove_authorization(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
     if chat_id in authorized_chats:
@@ -223,13 +236,14 @@ async def remove_authorization(context: ContextTypes.DEFAULT_TYPE, chat_id: str)
             logger.info(f"Authorization removed for chat {chat_id} after 24 hours.")
         except TelegramError as e:
             logger.error(f"Error sending expiration message to chat {chat_id}: {e}")
+            await notify_error(context, ALLOWED_CHAT_ID, f"Error sending expiration message to chat {chat_id}: {e}")
 
 # --- Get BTC Price and Volume with Retry ---
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2), before_sleep=lambda retry_state: logger.warning(f"Retrying Kraken API call {retry_state.attempt_number}/3..."))
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5), before_sleep=lambda retry_state: logger.warning(f"Retrying Kraken API call {retry_state.attempt_number}/3..."))
 def get_btc_price_and_volume():
     global price_history, volume_history, high_history, low_history, open_history
     try:
-        response = requests.get(KRAKEN_OHLC_URL, timeout=10)
+        response = requests.get(KRAKEN_OHLC_URL, timeout=30)
         response.raise_for_status()
         data = response.json()
         
@@ -549,7 +563,6 @@ async def set_up(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     current_time = time.time()
     
-    # Kiểm tra trạng thái ủy quyền
     auth_status = "Đã được ủy quyền mặc định" if chat_id == ALLOWED_CHAT_ID else "Chưa được ủy quyền"
     if chat_id in authorized_chats:
         auth_info = authorized_chats[chat_id]
@@ -558,7 +571,6 @@ async def set_up(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif auth_info.get("key_used", False) and current_time - auth_info["timestamp"] < 24 * 3600:
             auth_status = "Đã được ủy quyền (hết hạn sau {:.1f} giờ)".format((24 * 3600 - (current_time - auth_info["timestamp"])) / 3600)
     
-    # Kiểm tra API settings
     api_status = "Chưa cài đặt API Key/Secret"
     if context.user_data.get('api_key') and context.user_data.get('api_secret'):
         api_status = f"API Key: {context.user_data['api_key']}\nAPI Secret: {context.user_data['api_secret']}"
@@ -618,6 +630,7 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         latest_price, latest_volume, prices, volumes, highs, lows, opens = get_btc_price_and_volume()
         if latest_price is None:
             await update.message.reply_text("Không thể lấy dữ liệu giá. Vui lòng thử lại hoặc kiểm tra kết nối.")
+            await notify_error(context, ALLOWED_CHAT_ID, "Failed to fetch price data from Kraken API")
             return
 
         price_history = prices[-MAX_HISTORY:]
@@ -626,12 +639,11 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         low_history = lows[-MAX_HISTORY:]
         open_history = opens[-MAX_HISTORY:]
 
-        # Kiểm tra dữ liệu trước khi tính toán
         if not price_history or not volume_history or not high_history or not low_history or not open_history:
             await update.message.reply_text("Dữ liệu không đủ để phân tích. Vui lòng thử lại.")
+            await notify_error(context, ALLOWED_CHAT_ID, "Insufficient data for analysis")
             return
 
-        # Technical analysis
         sma_5 = calculate_sma(price_history, 5)
         sma_20, upper_band, lower_band = calculate_bollinger_bands(price_history)
         macd, signal = calculate_macd(price_history)
@@ -701,9 +713,11 @@ Giá hiện tại: {latest_price_str} USD
         except TelegramError as e:
             logger.error(f"Error sending Telegram message to {chat_id}: {e}")
             await update.message.reply_text("Lỗi khi gửi tín hiệu. Vui lòng thử lại.")
+            await notify_error(context, ALLOWED_CHAT_ID, f"Error sending signal to chat {chat_id}: {e}")
     except Exception as e:
         logger.error(f"Error in signals command: {e}")
         await update.message.reply_text("Lỗi khi xử lý tín hiệu. Vui lòng thử lại.")
+        await notify_error(context, ALLOWED_CHAT_ID, f"Error in signals command: {e}")
     finally:
         is_analyzing = False
 
@@ -730,6 +744,34 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Đã hủy cài đặt.")
     return ConversationHandler.END
 
+# --- Health Check Endpoint ---
+async def health_check(request):
+    return web.Response(text="OK")
+
+# --- Webhook Handler ---
+async def webhook_handler(request):
+    global application
+    try:
+        update = await request.json()
+        if update:
+            await application.process_update(Update.de_json(update, application.bot))
+        return web.Response(text="OK")
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}")
+        await notify_error(application, ALLOWED_CHAT_ID, f"Webhook error: {e}")
+        return web.Response(text="Error", status=500)
+
+# --- Setup Webhook Server ---
+async def setup_webhook():
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, webhook_handler)
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT)
+    await site.start()
+    logger.info(f"Webhook server started on port {WEBHOOK_PORT}")
+
 # --- Validate Telegram Token ---
 async def validate_token(token: str) -> bool:
     try:
@@ -742,7 +784,7 @@ async def validate_token(token: str) -> bool:
 
 # --- Main Function ---
 async def main():
-    # Validate token before starting bot
+    global application
     if not await validate_token(TELEGRAM_TOKEN):
         logger.error("Bot cannot start due to invalid Telegram token.")
         return
@@ -767,30 +809,34 @@ async def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
-    print("Handlers added. Starting polling...")
 
-    # Initialize and start the bot
+    print("Handlers added. Setting up webhook...")
+    webhook_url = os.environ.get("WEBHOOK_URL", f"https://your-render-app.onrender.com{WEBHOOK_PATH}")
+    try:
+        await application.bot.set_webhook(webhook_url)
+        logger.info(f"Webhook set to {webhook_url}")
+    except TelegramError as e:
+        logger.error(f"Failed to set webhook: {e}")
+        await notify_error(application, ALLOWED_CHAT_ID, f"Failed to set webhook: {e}")
+        return
+
     await application.initialize()
     await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    await setup_webhook()
 
-    # Keep the bot running until stopped
     try:
-        # Use an event to keep the main coroutine running
         stop_event = asyncio.Event()
         await stop_event.wait()
     except KeyboardInterrupt:
         logger.info("Received shutdown signal, stopping bot...")
     finally:
-        # Properly stop and shutdown the application
-        await application.updater.stop()
+        await application.bot.delete_webhook()
         await application.stop()
         await application.shutdown()
         logger.info("Bot shutdown complete.")
 
 # --- Run the bot ---
 if __name__ == "__main__":
-    # Create a new event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -800,10 +846,8 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Failed to run bot: {e}")
     finally:
-        # Ensure all tasks are completed and close the loop
         pending = asyncio.all_tasks(loop=loop)
         for task in pending:
             task.cancel()
-        loop.stop()
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
