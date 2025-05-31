@@ -21,52 +21,23 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Load or Create Configuration ---
-CONFIG_FILE = "config.json"
-AUTHORIZED_CHATS_FILE = "authorized_chats.json"
-HISTORY_FILE = "price_history.csv"
+# --- Load Configuration from Environment Variables ---
+CONFIG_FILE = "/opt/render/project/data/config.json"
+AUTHORIZED_CHATS_FILE = "/opt/render/project/data/authorized_chats.json"
+HISTORY_FILE = "/opt/render/project/data/price_history.csv"
 MAX_HISTORY = 100
 
-def create_default_config():
-    default_config = {
-        "TELEGRAM_TOKEN": "7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk",
-        "ALLOWED_CHAT_ID": "-1002554202438",
-        "VALID_KEY": "10092006",
-        "NEWS_API_KEY": "af9b016f3f044a6f84453bbe1a526f0b",
-        "GLASSNODE_API_KEY": "2b9f4c81-6f2a-4e3b-9d1e-123456789abc"
-    }
-    try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(default_config, f, indent=4)
-        logger.warning("Created default config.json with hardcoded values. Please update GLASSNODE_API_KEY with a valid key from https://glassnode.com/")
-    except Exception as e:
-        logger.error(f"Error creating default config.json: {e}")
-    return default_config
+# Đọc cấu hình từ biến môi trường
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk")
+ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "-1002554202438")
+VALID_KEY = os.getenv("VALID_KEY", "10092006")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "af9b016f3f044a6f84453bbe1a526f0b")
+GLASSNODE_API_KEY = os.getenv("GLASSNODE_API_KEY", "2b9f4c81-6f2a-4e3b-9d1e-123456789abc")
 
-try:
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        TELEGRAM_TOKEN = config.get('TELEGRAM_TOKEN')
-        ALLOWED_CHAT_ID = config.get('ALLOWED_CHAT_ID')
-        VALID_KEY = config.get('VALID_KEY', '10092006')
-        NEWS_API_KEY = config.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
-        GLASSNODE_API_KEY = config.get('GLASSNODE_API_KEY', 'YOUR_GLASSNODE_API_KEY')
-        if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
-            raise ValueError("TELEGRAM_TOKEN or ALLOWED_CHAT_ID missing in config.json")
-    else:
-        config = create_default_config()
-        TELEGRAM_TOKEN = config.get('TELEGRAM_TOKEN')
-        ALLOWED_CHAT_ID = config.get('ALLOWED_CHAT_ID')
-        VALID_KEY = config.get('VALID_KEY', '10092006')
-        NEWS_API_KEY = config.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
-        GLASSNODE_API_KEY = config.get('GLASSNODE_API_KEY', 'YOUR_GLASSNODE_API_KEY')
-except json.JSONDecodeError as e:
-    logger.error(f"config.json is malformed: {e}")
-    raise
-except Exception as e:
-    logger.error(f"Error loading config: {e}")
-    raise
+# Kiểm tra các giá trị bắt buộc
+if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
+    logger.error("TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID bị thiếu trong biến môi trường.")
+    raise ValueError("TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID bị thiếu trong biến môi trường.")
 
 # --- Constants ---
 KRAKEN_OHLC_URL = 'https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1'
@@ -85,6 +56,7 @@ is_analyzing = False
 # --- Save and Load Authorized Chats ---
 def save_authorized_chats():
     try:
+        os.makedirs(os.path.dirname(AUTHORIZED_CHATS_FILE), exist_ok=True)
         with open(AUTHORIZED_CHATS_FILE, 'w', encoding='utf-8') as f:
             json.dump(authorized_chats, f)
     except Exception as e:
@@ -157,49 +129,26 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     provided_key = context.args[0]
-    try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        valid_key = config.get('VALID_KEY', '10092006')
+    if provided_key == VALID_KEY:
+        authorized_chats.clear()
+        authorized_chats[chat_id] = {"timestamp": current_time, "key_attempts": 1}
+        save_authorized_chats()
+        await update.message.reply_text("Key hợp lệ! Đoạn chat này đã được cấp quyền duy nhất trong 24 giờ.")
+        logger.info(f"Chat {chat_id} authorized with key: {provided_key}")
         
-        if chat_id in authorized_chats:
-            auth_info = authorized_chats[chat_id]
-            if auth_info["key_attempts"] >= 2:
-                await update.message.reply_text("Đoạn chat này đã bị khóa do nhập key quá số lần cho phép.")
-                logger.warning(f"Chat {chat_id} is blocked due to multiple key attempts.")
-                return
-            if current_time - auth_info["timestamp"] < 24 * 3600:
-                await update.message.reply_text("Đoạn chat này đã được cấp quyền. Không cần nhập lại key.")
-                auth_info["key_attempts"] += 1
-                save_authorized_chats()
-                return
-            else:
-                del authorized_chats[chat_id]
-                save_authorized_chats()
-        
-        if provided_key == valid_key:
-            authorized_chats.clear()
+        context.job_queue.run_once(
+            callback=lambda ctx: remove_authorization(ctx, chat_id),
+            when=24 * 3600,
+            name=f"remove_auth_{chat_id}"
+        )
+    else:
+        if chat_id not in authorized_chats:
             authorized_chats[chat_id] = {"timestamp": current_time, "key_attempts": 1}
-            save_authorized_chats()
-            await update.message.reply_text("Key hợp lệ! Đoạn chat này đã được cấp quyền duy nhất trong 24 giờ.")
-            logger.info(f"Chat {chat_id} authorized with key: {provided_key}")
-            
-            context.job_queue.run_once(
-                callback=lambda ctx: remove_authorization(ctx, chat_id),
-                when=24 * 3600,
-                name=f"remove_auth_{chat_id}"
-            )
         else:
-            if chat_id not in authorized_chats:
-                authorized_chats[chat_id] = {"timestamp": current_time, "key_attempts": 1}
-            else:
-                authorized_chats[chat_id]["key_attempts"] += 1
-            save_authorized_chats()
-            await update.message.reply_text("Key không hợp lệ. Vui lòng thử lại.")
-            logger.warning(f"Chat {chat_id} attempted to use invalid key: {provided_key}")
-    except Exception as e:
-        logger.error(f"Error processing key command in chat {chat_id}: {e}")
-        await update.message.reply_text("Lỗi khi xử lý key. Vui lòng thử lại.")
+            authorized_chats[chat_id]["key_attempts"] += 1
+        save_authorized_chats()
+        await update.message.reply_text("Key không hợp lệ. Vui lòng thử lại.")
+        logger.warning(f"Chat {chat_id} attempted to use invalid key: {provided_key}")
 
 async def remove_authorization(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
     if chat_id in authorized_chats:
@@ -526,14 +475,13 @@ def predict_price_rf(prices, volumes, highs, lows):
             'price': prices[-30:],
             'volume': volumes[-30:],
             'high': highs[-30:],
-            'low': lows[-30:],
-            'atr': [atr_value] * 30 if atr_value is not None else [0] * 30,
-            'vwap': [vwap_value] * 30 if vwap_value is not None else [0] * 30
+            'low': lows[-30:]
         })
         df['price'] = df['price'].ffill().fillna(0)
         df['price_diff'] = df['price'].diff()
         df['sma_5'] = df['price'].rolling(window=5).mean()
-        df['rsi'] = df['price'].rolling(window=14, min_periods=14).apply(lambda x: calculate_rsi(x), raw=True)
+        df['atr'] = [atr_value] * 30 if atr_value is not None else [0] * 30
+        df['vwap'] = [vwap_value] * 30 if vwap_value is not None else [0] * 30
         X = df[['price', 'volume', 'high', 'low', 'price_diff', 'sma_5', 'atr', 'vwap']].dropna()
         y = X['price'].shift(-1).dropna()
         X = X.iloc[:-1]
@@ -602,6 +550,7 @@ def format_value(value, decimals=2):
 # --- Save Data to CSV ---
 def save_to_csv(price, trend, win_rate, market_status, chat_id):
     try:
+        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
         file_exists = os.path.exists(HISTORY_FILE)
         with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
@@ -625,14 +574,12 @@ async def set_up(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     current_time = time.time()
     
-    # Kiểm tra trạng thái ủy quyền
     auth_status = "Đã được ủy quyền mặc định" if chat_id == ALLOWED_CHAT_ID else "Chưa được ủy quyền"
     if chat_id in authorized_chats:
         auth_info = authorized_chats[chat_id]
         if current_time - auth_info["timestamp"] < 24 * 3600:
             auth_status = "Đã được ủy quyền (hết hạn sau {:.1f} giờ)".format((24 * 3600 - (current_time - auth_info["timestamp"])) / 3600)
     
-    # Kiểm tra API settings
     api_status = "Chưa cài đặt App Account ID"
     if context.user_data.get('app_account_id'):
         api_status = f"App Account ID: {context.user_data['app_account_id']}"
@@ -858,13 +805,11 @@ async def main():
 
     # Keep the bot running until stopped
     try:
-        # Use an event to keep the main coroutine running
         stop_event = asyncio.Event()
         await stop_event.wait()
     except KeyboardInterrupt:
         logger.info("Received shutdown signal, stopping bot...")
     finally:
-        # Properly stop and shutdown the application
         await application.updater.stop()
         await application.stop()
         await application.shutdown()
@@ -872,7 +817,6 @@ async def main():
 
 # --- Run the bot ---
 if __name__ == "__main__":
-    # Create a new event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -882,7 +826,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Failed to run bot: {e}")
     finally:
-        # Ensure all tasks are completed and close the loop
         pending = asyncio.all_tasks(loop=loop)
         for task in pending:
             task.cancel()
