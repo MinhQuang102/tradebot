@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 
 # --- Load Configuration from Environment Variables ---
 try:
-    TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-    ALLOWED_CHAT_ID = os.environ.get('ALLOWED_CHAT_ID')
+    TELEGRAM_TOKEN = os.environ.get('7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk')
+    ALLOWED_CHAT_ID = os.environ.get('-1002554202438')
     VALID_KEY = os.environ.get('VALID_KEY', '10092006')
-    NEWS_API_KEY = os.environ.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
+    NEWS_API_KEY = os.environ.get('NEWS_API_KEY', 'af9b016f3f044a6f84453bbe1a526f0b')
     
     if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
         raise ValueError("TELEGRAM_TOKEN or ALLOWED_CHAT_ID missing in environment variables")
