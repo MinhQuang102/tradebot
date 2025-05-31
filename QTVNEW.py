@@ -42,23 +42,26 @@ def create_default_config():
 
 try:
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        TELEGRAM_TOKEN = config.get('TELEGRAM_TOKEN')
-        ALLOWED_CHAT_ID = config.get('ALLOWED_CHAT_ID')
-        VALID_KEY = config.get('VALID_KEY', '10092006')
-        NEWS_API_KEY = config.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
-        if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
-            raise ValueError("TELEGRAM_TOKEN or ALLOWED_CHAT_ID missing in config.json")
+        if os.path.getsize(CONFIG_FILE) == 0:
+            logger.warning(f"config.json is empty, creating default config.")
+            config = create_default_config()
+        else:
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            except json.JSONDecodeError as e:
+                logger.error(f"config.json is malformed: {e}. Creating default config.")
+                config = create_default_config()
     else:
+        logger.warning(f"config.json does not exist. Creating default config.")
         config = create_default_config()
-        TELEGRAM_TOKEN = config.get('TELEGRAM_TOKEN')
-        ALLOWED_CHAT_ID = config.get('ALLOWED_CHAT_ID')
-        VALID_KEY = config.get('VALID_KEY', '10092006')
-        NEWS_API_KEY = config.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
-except json.JSONDecodeError as e:
-    logger.error(f"config.json is malformed: {e}")
-    raise
+    
+    TELEGRAM_TOKEN = config.get('TELEGRAM_TOKEN')
+    ALLOWED_CHAT_ID = config.get('ALLOWED_CHAT_ID')
+    VALID_KEY = config.get('VALID_KEY', '10092006')
+    NEWS_API_KEY = config.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
+    if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
+        raise ValueError("TELEGRAM_TOKEN or ALLOWED_CHAT_ID missing in config.json")
 except Exception as e:
     logger.error(f"Error loading config: {e}")
     raise
