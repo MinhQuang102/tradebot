@@ -794,12 +794,12 @@ async def main():
 
         logger.info("Handlers added successfully.")
         logger.info("Setting up webhook...")
-        webhook_url = os.environ.get("WEBHOOK_URL", "")
+        webhook_url = os.environ.get("WEBHOOK_URL")
         if not webhook_url:
-            logger.error("WEBHOOK_URL not set in environment variables.")
+            logger.error("WEBHOOK_URL not set in environment variables. Please set it to your Render URL (e.g., https://your-app.onrender.com/webhook).")
             return
         try:
-            await application.bot.set_webhook(webhook_url)
+            await application.bot.set_webhook(url=webhook_url)
             logger.info(f"Successfully set webhook to: {webhook_url}")
         except TelegramError as e:
             logger.error(f"Failed to set webhook: {e}")
@@ -812,8 +812,8 @@ async def main():
 
         logger.info("Application started successfully.")
         try:
-            stop_event = asyncio.Event()
-            await stop_event.wait()
+            while True:
+                await asyncio.sleep(1)  # Keep the event loop running
         except KeyboardInterrupt:
             logger.info("Received shutdown signal, stopping bot...")
         finally:
