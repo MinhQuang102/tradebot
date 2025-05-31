@@ -7,8 +7,6 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import MinMaxScaler
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler
 from telegram.ext import filters
@@ -16,31 +14,60 @@ from telegram.error import TelegramError
 import time
 import logging
 from tenacity import retry, stop_after_attempt, wait_fixed
+from aiohttp import web
 
 # --- Setup Logging ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Load Configuration from Environment Variables ---
-CONFIG_FILE = "/opt/render/project/data/config.json"
-AUTHORIZED_CHATS_FILE = "/opt/render/project/data/authorized_chats.json"
-HISTORY_FILE = "/opt/render/project/data/price_history.csv"
+# --- Load or Create Configuration ---
+CONFIG_FILE = "config.json"
+AUTHORIZED_CHATS_FILE = "authorized_chats.json"
+HISTORY_FILE = "price_history.csv"
 MAX_HISTORY = 100
 
-# Đọc cấu hình từ biến môi trường
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk")
-ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "-1002554202438")
-VALID_KEY = os.getenv("VALID_KEY", "10092006")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY", "af9b016f3f044a6f84453bbe1a526f0b")
-GLASSNODE_API_KEY = os.getenv("GLASSNODE_API_KEY", "2b9f4c81-6f2a-4e3b-9d1e-123456789abc")
+def create_default_config():
+    default_config = {
+        "TELEGRAM_TOKEN": "7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk",
+        "ALLOWED_CHAT_ID": "-1002554202438",
+        "VALID_KEY": "10092006",
+        "NEWS_API_KEY": "af9b016f3f044a6f84453bbe1a526f0b"
+    }
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(default_config, f, indent=4)
+        logger.warning("Created default config.json with hardcoded values.")
+    except Exception as e:
+        logger.error(f"Error creating default config.json: {e}")
+    return default_config
 
-# Kiểm tra các giá trị bắt buộc
-if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
-    logger.error("TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID bị thiếu trong biến môi trường.")
-    raise ValueError("TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID bị thiếu trong biến môi trường.")
+try:
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        TELEGRAM_TOKEN = config.get('TELEGRAM_TOKEN')
+        ALLOWED_CHAT_ID = config.get('ALLOWED_CHAT_ID')
+        VALID_KEY = config.get('VALID_KEY', '10092006')
+        NEWS_API_KEY = config.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
+        if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
+            raise ValueError("TELEGRAM_TOKEN or ALLOWED_CHAT_ID missing in config.json")
+    else:
+        config = create_default_config()
+        TELEGRAM_TOKEN = config.get('TELEGRAM_TOKEN')
+        ALLOWED_CHAT_ID = config.get('ALLOWED_CHAT_ID')
+        VALID_KEY = config.get('VALID_KEY', '10092006')
+        NEWS_API_KEY = config.get('NEWS_API_KEY', 'YOUR_NEWS_API_KEY')
+except json.JSONDecodeError as e:
+    logger.error(f"config.json is malformed: {e}")
+    raise
+except Exception as e:
+    logger.error(f"Error loading config: {e}")
+    raise
 
 # --- Constants ---
 KRAKEN_OHLC_URL = 'https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1'
+WEBHOOK_PORT = int(os.environ.get("PORT", 8080))  # Render uses PORT env variable
+WEBHOOK_PATH = "/webhook"
 
 # --- Global Variables ---
 price_history = []
@@ -52,11 +79,11 @@ support_level = None
 resistance_level = None
 authorized_chats = {}
 is_analyzing = False
+application = None  # Global application instance for webhook
 
 # --- Save and Load Authorized Chats ---
 def save_authorized_chats():
     try:
-        os.makedirs(os.path.dirname(AUTHORIZED_CHATS_FILE), exist_ok=True)
         with open(AUTHORIZED_CHATS_FILE, 'w', encoding='utf-8') as f:
             json.dump(authorized_chats, f)
     except Exception as e:
@@ -84,6 +111,13 @@ def load_authorized_chats():
         logger.error(f"Error loading authorized_chats: {e}")
         authorized_chats = {}
 
+# --- Notify Error to Admin ---
+async def notify_error(context: ContextTypes.DEFAULT_TYPE, chat_id: str, error: str):
+    try:
+        await context.bot.send_message(chat_id=ALLOWED_CHAT_ID, text=f"Lỗi bot: {error}")
+    except TelegramError as e:
+        logger.error(f"Không thể gửi thông báo lỗi: {e}")
+
 # --- Check if chat_id is allowed and user is admin in group ---
 async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = str(update.effective_chat.id)
@@ -95,6 +129,10 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     if authorized_chats and chat_id in authorized_chats:
         auth_info = authorized_chats[chat_id]
+        if auth_info.get("banned", False):
+            await update.message.reply_text("Đoạn chat này đã bị cấm do nhập sai key quá số lần cho phép.")
+            logger.warning(f"Chat {chat_id} is banned.")
+            return False
         if current_time - auth_info["timestamp"] < 24 * 3600:
             if update.effective_chat.type in ['group', 'supergroup']:
                 try:
@@ -106,6 +144,7 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 except TelegramError as e:
                     logger.error(f"Error checking admin status for user {user_id} in chat {chat_id}: {e}")
                     await update.message.reply_text("Lỗi khi kiểm tra quyền quản trị viên. Vui lòng thử lại.")
+                    await notify_error(context, ALLOWED_CHAT_ID, f"Error checking admin status in chat {chat_id}: {e}")
                     return False
             return True
         else:
@@ -129,26 +168,64 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     provided_key = context.args[0]
-    if provided_key == VALID_KEY:
-        authorized_chats.clear()
-        authorized_chats[chat_id] = {"timestamp": current_time, "key_attempts": 1}
-        save_authorized_chats()
-        await update.message.reply_text("Key hợp lệ! Đoạn chat này đã được cấp quyền duy nhất trong 24 giờ.")
-        logger.info(f"Chat {chat_id} authorized with key: {provided_key}")
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        valid_key = config.get('VALID_KEY', '10092006')
         
-        context.job_queue.run_once(
-            callback=lambda ctx: remove_authorization(ctx, chat_id),
-            when=24 * 3600,
-            name=f"remove_auth_{chat_id}"
-        )
-    else:
-        if chat_id not in authorized_chats:
-            authorized_chats[chat_id] = {"timestamp": current_time, "key_attempts": 1}
+        if chat_id in authorized_chats:
+            auth_info = authorized_chats[chat_id]
+            if auth_info.get("banned", False):
+                await update.message.reply_text("Đoạn chat này đã bị cấm do nhập sai key quá số lần cho phép.")
+                logger.warning(f"Chat {chat_id} is banned.")
+                return
+            if auth_info.get("key_used", False):
+                await update.message.reply_text("Đoạn chat này đã sử dụng key một lần và không thể nhập lại.")
+                logger.warning(f"Chat {chat_id} attempted to reuse key.")
+                return
+            if auth_info["key_attempts"] >= 2:
+                authorized_chats[chat_id]["banned"] = True
+                save_authorized_chats()
+                await update.message.reply_text("Đoạn chat này đã bị cấm do nhập sai key quá số lần cho phép.")
+                logger.warning(f"Chat {chat_id} banned due to multiple key attempts.")
+                return
+        
+        if provided_key == valid_key:
+            authorized_chats.clear()
+            authorized_chats[chat_id] = {
+                "timestamp": current_time,
+                "key_attempts": 1,
+                "key_used": True,
+                "banned": False
+            }
+            save_authorized_chats()
+            await update.message.reply_text("Key hợp lệ! Đoạn chat này đã được cấp quyền duy nhất trong 24 giờ.")
+            logger.info(f"Chat {chat_id} authorized with key: {provided_key}")
+            
+            context.job_queue.run_once(
+                callback=lambda ctx: remove_authorization(ctx, chat_id),
+                when=24 * 3600,
+                name=f"remove_auth_{chat_id}"
+            )
         else:
-            authorized_chats[chat_id]["key_attempts"] += 1
-        save_authorized_chats()
-        await update.message.reply_text("Key không hợp lệ. Vui lòng thử lại.")
-        logger.warning(f"Chat {chat_id} attempted to use invalid key: {provided_key}")
+            if chat_id not in authorized_chats:
+                authorized_chats[chat_id] = {
+                    "timestamp": current_time,
+                    "key_attempts": 1,
+                    "key_used": False,
+                    "banned": False
+                }
+            else:
+                authorized_chats[chat_id]["key_attempts"] += 1
+                if authorized_chats[chat_id]["key_attempts"] >= 2:
+                    authorized_chats[chat_id]["banned"] = True
+            save_authorized_chats()
+            await update.message.reply_text("Key không hợp lệ. Vui lòng thử lại. (Còn {} lần thử)".format(2 - authorized_chats[chat_id]["key_attempts"]))
+            logger.warning(f"Chat {chat_id} attempted to use invalid key: {provided_key}")
+    except Exception as e:
+        logger.error(f"Error processing key command in chat {chat_id}: {e}")
+        await update.message.reply_text("Lỗi khi xử lý key. Vui lòng thử lại.")
+        await notify_error(context, ALLOWED_CHAT_ID, f"Error in key command for chat {chat_id}: {e}")
 
 async def remove_authorization(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
     if chat_id in authorized_chats:
@@ -159,13 +236,14 @@ async def remove_authorization(context: ContextTypes.DEFAULT_TYPE, chat_id: str)
             logger.info(f"Authorization removed for chat {chat_id} after 24 hours.")
         except TelegramError as e:
             logger.error(f"Error sending expiration message to chat {chat_id}: {e}")
+            await notify_error(context, ALLOWED_CHAT_ID, f"Error sending expiration message to chat {chat_id}: {e}")
 
 # --- Get BTC Price and Volume with Retry ---
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2), before_sleep=lambda retry_state: logger.warning(f"Retrying Kraken API call {retry_state.attempt_number}/3..."))
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5), before_sleep=lambda retry_state: logger.warning(f"Retrying Kraken API call {retry_state.attempt_number}/3..."))
 def get_btc_price_and_volume():
     global price_history, volume_history, high_history, low_history, open_history
     try:
-        response = requests.get(KRAKEN_OHLC_URL, timeout=10)
+        response = requests.get(KRAKEN_OHLC_URL, timeout=30)
         response.raise_for_status()
         data = response.json()
         
@@ -357,71 +435,6 @@ def calculate_bollinger_bands(prices, period=20, num_std=2):
         logger.error(f"Error calculating Bollinger Bands: {e}")
         return None, None, None
 
-# --- Calculate ADX ---
-def calculate_adx(highs, lows, closes, period=14):
-    if len(closes) < period + 1:
-        return None
-    try:
-        df = pd.DataFrame({'high': highs, 'low': lows, 'close': closes})
-        df['tr'] = np.maximum.reduce([
-            df['high'] - df['low'],
-            (df['high'] - df['close'].shift(1)).abs(),
-            (df['low'] - df['close'].shift(1)).abs()
-        ])
-        df['dm_plus'] = np.where((df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
-                                 np.maximum(df['high'] - df['high'].shift(1), 0), 0)
-        df['dm_minus'] = np.where((df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)),
-                                  np.maximum(df['low'].shift(1) - df['low'], 0), 0)
-        df['tr_smooth'] = df['tr'].rolling(window=period).mean()
-        df['dm_plus_smooth'] = df['dm_plus'].rolling(window=period).mean()
-        df['dm_minus_smooth'] = df['dm_minus'].rolling(window=period).mean()
-        df['di_plus'] = (df['dm_plus_smooth'] / df['tr_smooth']) * 100
-        df['di_minus'] = (df['dm_minus_smooth'] / df['tr_smooth']) * 100
-        df['dx'] = (abs(df['di_plus'] - df['di_minus']) / (df['di_plus'] + df['di_minus'])) * 100
-        adx = df['dx'].rolling(window=period).mean().iloc[-1]
-        return adx if not np.isnan(adx) else None
-    except Exception as e:
-        logger.error(f"Error calculating ADX: {e}")
-        return None
-
-# --- Calculate MFI ---
-def calculate_mfi(highs, lows, closes, volumes, period=14):
-    if len(closes) < period + 1:
-        return None
-    try:
-        typical_prices = [(highs[i] + lows[i] + closes[i]) / 3 for i in range(-period-1, 0)]
-        raw_money_flow = [typical_prices[i] * volumes[i] for i in range(-period-1, 0)]
-        positive_flow = [rmf if typical_prices[i] > typical_prices[i-1] else 0 for i, rmf in enumerate(raw_money_flow[1:], 1)]
-        negative_flow = [rmf if typical_prices[i] < typical_prices[i-1] else 0 for i, rmf in enumerate(raw_money_flow[1:], 1)]
-        positive_sum = sum(positive_flow)
-        negative_sum = sum(negative_flow)
-        if negative_sum == 0:
-            return 100 if positive_sum > 0 else 50
-        money_ratio = positive_sum / negative_sum
-        mfi = 100 - (100 / (1 + money_ratio))
-        return mfi
-    except Exception as e:
-        logger.error(f"Error calculating MFI: {e}")
-        return None
-
-# --- Fetch On-Chain Data ---
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-def fetch_onchain_data():
-    try:
-        url = "https://api.glassnode.com/v1/metrics/addresses/active_count"
-        params = {"a": "BTC", "api_key": GLASSNODE_API_KEY}
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        active_addresses = [d['v'] for d in data][-1] if data else 0
-        return active_addresses
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching on-chain data: {e}")
-        return 0
-    except (ValueError, KeyError, IndexError) as e:
-        logger.error(f"Error parsing on-chain data: {e}")
-        return 0
-
 # --- Detect Candlestick Patterns ---
 def detect_candlestick_pattern(highs, lows, opens, closes):
     if len(closes) < 2:
@@ -475,13 +488,14 @@ def predict_price_rf(prices, volumes, highs, lows):
             'price': prices[-30:],
             'volume': volumes[-30:],
             'high': highs[-30:],
-            'low': lows[-30:]
+            'low': lows[-30:],
+            'atr': [atr_value] * 30 if atr_value is not None else [0] * 30,
+            'vwap': [vwap_value] * 30 if vwap_value is not None else [0] * 30
         })
         df['price'] = df['price'].ffill().fillna(0)
         df['price_diff'] = df['price'].diff()
         df['sma_5'] = df['price'].rolling(window=5).mean()
-        df['atr'] = [atr_value] * 30 if atr_value is not None else [0] * 30
-        df['vwap'] = [vwap_value] * 30 if vwap_value is not None else [0] * 30
+        df['rsi'] = df['price'].rolling(window=14, min_periods=14).apply(lambda x: calculate_rsi(x), raw=True)
         X = df[['price', 'volume', 'high', 'low', 'price_diff', 'sma_5', 'atr', 'vwap']].dropna()
         y = X['price'].shift(-1).dropna()
         X = X.iloc[:-1]
@@ -494,30 +508,6 @@ def predict_price_rf(prices, volumes, highs, lows):
         return model.predict(next_data)[0]
     except Exception as e:
         logger.error(f"Error predicting price with Random Forest: {e}")
-        return None
-
-# --- Predict Price with Linear Regression ---
-def predict_price_linear(prices, volumes, highs, lows):
-    if len(prices) < 30:
-        return None
-    try:
-        scaler = MinMaxScaler()
-        df = pd.DataFrame({
-            'price': prices[-30:],
-            'volume': volumes[-30:],
-            'high': highs[-30:],
-            'low': lows[-30:]
-        })
-        df = df.ffill().fillna(0)
-        scaled_data = scaler.fit_transform(df)
-        X = scaled_data[:-1]
-        y = scaled_data[1:, 0]
-        model = LinearRegression()
-        model.fit(X, y)
-        prediction = model.predict([scaled_data[-1]])
-        return scaler.inverse_transform([[prediction[0], 0, 0, 0]])[0][0]
-    except Exception as e:
-        logger.error(f"Error predicting price with Linear Regression: {e}")
         return None
 
 # --- Detect Support and Resistance ---
@@ -550,7 +540,6 @@ def format_value(value, decimals=2):
 # --- Save Data to CSV ---
 def save_to_csv(price, trend, win_rate, market_status, chat_id):
     try:
-        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
         file_exists = os.path.exists(HISTORY_FILE)
         with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
@@ -577,12 +566,14 @@ async def set_up(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auth_status = "Đã được ủy quyền mặc định" if chat_id == ALLOWED_CHAT_ID else "Chưa được ủy quyền"
     if chat_id in authorized_chats:
         auth_info = authorized_chats[chat_id]
-        if current_time - auth_info["timestamp"] < 24 * 3600:
+        if auth_info.get("banned", False):
+            auth_status = "Đã bị cấm do nhập sai key quá số lần cho phép"
+        elif auth_info.get("key_used", False) and current_time - auth_info["timestamp"] < 24 * 3600:
             auth_status = "Đã được ủy quyền (hết hạn sau {:.1f} giờ)".format((24 * 3600 - (current_time - auth_info["timestamp"])) / 3600)
     
-    api_status = "Chưa cài đặt App Account ID"
-    if context.user_data.get('app_account_id'):
-        api_status = f"App Account ID: {context.user_data['app_account_id']}"
+    api_status = "Chưa cài đặt API Key/Secret"
+    if context.user_data.get('api_key') and context.user_data.get('api_secret'):
+        api_status = f"API Key: {context.user_data['api_key']}\nAPI Secret: {context.user_data['api_secret']}"
     
     message = (
         f"📋 **Trạng thái thiết lập bot** 📋\n\n"
@@ -590,7 +581,7 @@ async def set_up(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"**Trạng thái ủy quyền**: {auth_status}\n"
         f"**Cài đặt API**:\n{api_status}\n\n"
         f"Nếu chưa ủy quyền, dùng /key <key>.\n"
-        f"Để cài đặt App Account ID, dùng /settings."
+        f"Để cài đặt API, dùng /settings."
     )
     await update.message.reply_text(message)
 
@@ -600,9 +591,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 **Hướng dẫn sử dụng @mekiemtien102** 📖\n\n"
         "Danh sách lệnh khả dụng:\n"
         "/start - Khởi động bot và xem giới thiệu\n"
-        "/key <key> - Xác thực quyền truy cập cho chat (24 giờ)\n"
+        "/key <key> - Xác thực quyền truy cập cho chat (24 giờ, chỉ nhập được một lần duy nhất)\n"
         "/signals - Xem tín hiệu giao dịch BTC/USD\n"
-        "/settings - Cài đặt App Account ID của Coincex\n"
+        "/settings - Cài đặt API của coincex.io\n"
         "/set_up - Kiểm tra trạng thái thiết lập của bot\n"
         "/help - Hiển thị danh sách lệnh (bạn đang xem)\n"
         "/cskh - Thông tin hỗ trợ khách hàng\n\n"
@@ -639,6 +630,7 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         latest_price, latest_volume, prices, volumes, highs, lows, opens = get_btc_price_and_volume()
         if latest_price is None:
             await update.message.reply_text("Không thể lấy dữ liệu giá. Vui lòng thử lại hoặc kiểm tra kết nối.")
+            await notify_error(context, ALLOWED_CHAT_ID, "Failed to fetch price data from Kraken API")
             return
 
         price_history = prices[-MAX_HISTORY:]
@@ -649,9 +641,9 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not price_history or not volume_history or not high_history or not low_history or not open_history:
             await update.message.reply_text("Dữ liệu không đủ để phân tích. Vui lòng thử lại.")
+            await notify_error(context, ALLOWED_CHAT_ID, "Insufficient data for analysis")
             return
 
-        # Technical analysis
         sma_5 = calculate_sma(price_history, 5)
         sma_20, upper_band, lower_band = calculate_bollinger_bands(price_history)
         macd, signal = calculate_macd(price_history)
@@ -661,18 +653,11 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         atr = calculate_atr(high_history, low_history, price_history)
         fib_382, fib_618, fib_diff = calculate_fibonacci_levels(price_history)
         predicted_price = predict_price_rf(price_history, volume_history, high_history, low_history)
-        linear_predicted_price = predict_price_linear(price_history, volume_history, high_history, low_history)
         candlestick_pattern = detect_candlestick_pattern(high_history, low_history, open_history, price_history)
         volume_trend = "TĂNG" if sum(volume_history[-5:]) > sum(volume_history[-10:-5]) else "GIẢM"
         volume_spike = calculate_volume_spike(volume_history)
         breakout = detect_breakout(price_history, high_history, low_history)
         support_resistance_signal = detect_support_resistance(latest_price)
-        adx = calculate_adx(high_history, low_history, price_history)
-        mfi = calculate_mfi(high_history, low_history, price_history, volume_history)
-        active_addresses = fetch_onchain_data()
-
-        onchain_signal = "Bullish" if active_addresses > 1000000 else "Bearish" if active_addresses < 500000 else "Neutral"
-        trend_strength = "Mạnh" if adx is not None and adx > 25 else "Yếu" if adx is not None else "N/A"
 
         buy_signals = [
             (1.5 if macd is not None and signal is not None and macd > signal else 0, "MACD Buy"),
@@ -686,11 +671,7 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (1.3 if fib_618 is not None and latest_price <= fib_618 else 0, "Fib 61.8%"),
             (1.5 if candlestick_pattern == "Doji - Tín hiệu đảo chiều tiềm năng" else 0, "Doji Buy"),
             (2.0 if volume_spike else 0, "Volume Spike Buy"),
-            (2.5 if breakout == "Breakout Up" else 0, "Breakout Up"),
-            (1.5 if adx is not None and adx > 25 and latest_price > sma_5 else 0, "Strong Uptrend (ADX)"),
-            (1.5 if linear_predicted_price is not None and linear_predicted_price > latest_price else 0, "Linear Buy"),
-            (1.5 if onchain_signal == "Bullish" else 0, "On-Chain Bullish"),
-            (1.5 if mfi is not None and mfi < 20 else 0, "MFI Oversold")
+            (2.5 if breakout == "Breakout Up" else 0, "Breakout Up")
         ]    
         sell_signals = [
             (1.5 if macd is not None and signal is not None and macd < signal else 0, "MACD Sell"),
@@ -704,11 +685,7 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (1.3 if fib_382 is not None and latest_price >= fib_382 else 0, "Fib 38.2%"),
             (1.5 if candlestick_pattern == "Doji - Tín hiệu đảo chiều tiềm năng" else 0, "Doji Sell"),
             (2.0 if volume_spike else 0, "Volume Spike Sell"),
-            (2.5 if breakout == "Breakout Down" else 0, "Breakout Down"),
-            (1.5 if adx is not None and adx > 25 and latest_price < sma_5 else 0, "Strong Downtrend (ADX)"),
-            (1.5 if linear_predicted_price is not None and linear_predicted_price < latest_price else 0, "Linear Sell"),
-            (1.5 if onchain_signal == "Bearish" else 0, "On-Chain Bearish"),
-            (1.5 if mfi is not None and mfi > 80 else 0, "MFI Overbought")
+            (2.5 if breakout == "Breakout Down" else 0, "Breakout Down")
         ]
 
         buy_score = sum(weight for weight, _ in buy_signals)
@@ -727,7 +704,7 @@ Time: {datetime.now().strftime('%H:%M:%S %d-%m-%Y')}
 Lệnh: {trend}
 Tỷ lệ thắng: {win_rate_str}%
 Giá hiện tại: {latest_price_str} USD
-"""
+        """
 
         try:
             await update.message.reply_text(report)
@@ -736,29 +713,64 @@ Giá hiện tại: {latest_price_str} USD
         except TelegramError as e:
             logger.error(f"Error sending Telegram message to {chat_id}: {e}")
             await update.message.reply_text("Lỗi khi gửi tín hiệu. Vui lòng thử lại.")
+            await notify_error(context, ALLOWED_CHAT_ID, f"Error sending signal to chat {chat_id}: {e}")
     except Exception as e:
         logger.error(f"Error in signals command: {e}")
         await update.message.reply_text("Lỗi khi xử lý tín hiệu. Vui lòng thử lại.")
+        await notify_error(context, ALLOWED_CHAT_ID, f"Error in signals command: {e}")
     finally:
         is_analyzing = False
 
 # --- Settings Command ---
-APP_ACCOUNT_ID = range(1)
+API_KEY, API_SECRET = range(2)
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_allowed_chat(update, context):
         return
-    await update.message.reply_text("Vui lòng nhập App Account ID của bạn từ Coincex:")
-    return APP_ACCOUNT_ID
+    await update.message.reply_text("Vui lòng nhập API Key của bạn từ coincex.io:")
+    return API_KEY
 
-async def get_app_account_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['app_account_id'] = update.message.text
-    await update.message.reply_text("Cài đặt App Account ID thành công! Sử dụng /signals để xem tín hiệu.")
+async def get_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['api_key'] = update.message.text
+    await update.message.reply_text("Vui lòng nhập API Secret:")
+    return API_SECRET
+
+async def get_api_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['api_secret'] = update.message.text
+    await update.message.reply_text("Cài đặt API thành công! Sử dụng /signals để xem tín hiệu.")
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Đã hủy cài đặt.")
     return ConversationHandler.END
+
+# --- Health Check Endpoint ---
+async def health_check(request):
+    return web.Response(text="OK")
+
+# --- Webhook Handler ---
+async def webhook_handler(request):
+    global application
+    try:
+        update = await request.json()
+        if update:
+            await application.process_update(Update.de_json(update, application.bot))
+        return web.Response(text="OK")
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}")
+        await notify_error(application, ALLOWED_CHAT_ID, f"Webhook error: {e}")
+        return web.Response(text="Error", status=500)
+
+# --- Setup Webhook Server ---
+async def setup_webhook():
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, webhook_handler)
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT)
+    await site.start()
+    logger.info(f"Webhook server started on port {WEBHOOK_PORT}")
 
 # --- Validate Telegram Token ---
 async def validate_token(token: str) -> bool:
@@ -772,7 +784,7 @@ async def validate_token(token: str) -> bool:
 
 # --- Main Function ---
 async def main():
-    # Validate token before starting bot
+    global application
     if not await validate_token(TELEGRAM_TOKEN):
         logger.error("Bot cannot start due to invalid Telegram token.")
         return
@@ -792,25 +804,33 @@ async def main():
     application.add_handler(ConversationHandler(
         entry_points=[CommandHandler("settings", settings)],
         states={
-            APP_ACCOUNT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_app_account_id)]
+            API_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_api_key)],
+            API_SECRET: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_api_secret)]
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     ))
-    print("Handlers added. Starting polling...")
 
-    # Initialize and start the bot
+    print("Handlers added. Setting up webhook...")
+    webhook_url = os.environ.get("WEBHOOK_URL", f"https://your-render-app.onrender.com{WEBHOOK_PATH}")
+    try:
+        await application.bot.set_webhook(webhook_url)
+        logger.info(f"Webhook set to {webhook_url}")
+    except TelegramError as e:
+        logger.error(f"Failed to set webhook: {e}")
+        await notify_error(application, ALLOWED_CHAT_ID, f"Failed to set webhook: {e}")
+        return
+
     await application.initialize()
     await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    await setup_webhook()
 
-    # Keep the bot running until stopped
     try:
         stop_event = asyncio.Event()
         await stop_event.wait()
     except KeyboardInterrupt:
         logger.info("Received shutdown signal, stopping bot...")
     finally:
-        await application.updater.stop()
+        await application.bot.delete_webhook()
         await application.stop()
         await application.shutdown()
         logger.info("Bot shutdown complete.")
@@ -829,6 +849,5 @@ if __name__ == "__main__":
         pending = asyncio.all_tasks(loop=loop)
         for task in pending:
             task.cancel()
-        loop.stop()
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
