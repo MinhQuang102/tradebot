@@ -1,1 +1,3 @@
-Time,ChatID,Price,Trend,WinRate,MarketStatus
+CONFIG_FILE = "/opt/render/project/data/config.json"
+AUTHORIZED_CHATS_FILE = "/opt/render/project/data/authorized_chats.json"
+HISTORY_FILE = "/opt/render/project/data/price_history.csv"
