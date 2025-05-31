@@ -13,7 +13,6 @@ from telegram.error import TelegramError
 import time
 import logging
 from tenacity import retry, stop_after_attempt, wait_fixed
-from aiohttp import web
 
 # --- Thiết lập Logging ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -23,25 +22,17 @@ logger = logging.getLogger(__name__)
 analysis_lock = asyncio.Lock()
 
 # --- Thiết lập biến môi trường trực tiếp trong mã ---
-# TODO: Thay các giá trị sau bằng giá trị thực tế của bạn
-TELEGRAM_TOKEN = "7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk"  # Lấy từ BotFather trên Telegram
-ALLOWED_CHAT_ID = "-1002554202438"  # ID của nhóm/người dùng được phép (dùng @userinfobot để lấy)
-VALID_KEY = "10092006"  # Key xác thực (mặc định: 10092006)
-WEBHOOK_URL = "https://your-app.onrender.com/webhook"  # URL của ứng dụng trên Render
+TELEGRAM_TOKEN = "7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk"  # Thay bằng token thực tế
+ALLOWED_CHAT_ID = "-1002554202438"  # Thay bằng chat ID thực tế
+VALID_KEY = "10092006"  # Key xác thực
 
-# Kiểm tra xem các biến cần thiết đã được thiết lập chưa
-try:
-    if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
-        logger.error("TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID không được thiết lập")
-        raise ValueError("Thiếu TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID")
-except Exception as e:
-    logger.error(f"Lỗi khi kiểm tra biến môi trường: {e}")
-    raise
+# Kiểm tra biến môi trường
+if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
+    logger.error("TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID không được thiết lập")
+    raise ValueError("Thiếu TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID")
 
 # --- Hằng số ---
 KRAKEN_OHLC_URL = 'https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1'
-WEBHOOK_PORT = int(os.environ.get("PORT", 8080))  # Lấy từ biến môi trường PORT nếu có, mặc định 8080
-WEBHOOK_PATH = "/webhook"
 AUTHORIZED_CHATS_FILE = "authorized_chats.json"
 HISTORY_FILE = "price_history.csv"
 MAX_HISTORY = 100
@@ -55,7 +46,6 @@ open_history = []
 support_level = None
 resistance_level = None
 authorized_chats = {}
-application = None
 
 # --- Lưu và tải danh sách chat được ủy quyền ---
 def save_authorized_chats():
@@ -83,13 +73,16 @@ def load_authorized_chats():
                     else:
                         authorized_chats = {}
                     save_authorized_chats()
+    except json.JSONDecodeError:
+        logger.error(f"File {AUTHORIZED_CHATS_FILE} bị hỏng, khởi tạo lại.")
+        authorized_chats = {}
+        save_authorized_chats()
     except Exception as e:
         logger.error(f"Lỗi khi tải authorized_chats: {e}")
         authorized_chats = {}
 
 # --- Thông báo lỗi cho admin ---
-async def notify_error(context, chat_id: str, error: str):
-    global application
+async def notify_error(application: Application, chat_id: str, error: str):
     if not application:
         logger.warning("Application là None, không thể gửi thông báo lỗi")
         return
@@ -122,9 +115,9 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         logger.warning(f"User {user_id} trong chat {chat_id} không phải admin.")
                         return False
                 except TelegramError as e:
-                    logger.error(f"Lỗi khi kiểm tra trạng thái admin cho user {user_id} trong chat {chat_id}: {e}")
-                    await update.message.reply_text("Lỗi khi kiểm tra quyền quản trị viên. Vui lòng thử lại.")
-                    await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi kiểm tra trạng thái admin trong chat {chat_id}: {e}")
+                    logger.error(f"Lỗi khi kiểm tra trạng thái admin: {e}")
+                    await update.message.reply_text("Lỗi khi kiểm tra quyền quản trị viên.")
+                    await notify_error(context.application, ALLOWED_CHAT_ID, f"Lỗi kiểm tra trạng thái admin trong chat {chat_id}: {e}")
                     return False
             return True
         else:
@@ -140,7 +133,7 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = time.time()
     
     if chat_id == ALLOWED_CHAT_ID:
-        await update.message.reply_text("Đoạn chat này đã được cấp quyền mặc định và không cần nhập key.")
+        await update.message.reply_text("Đoạn chat này đã được cấp quyền mặc định.")
         return
     
     if len(context.args) != 1:
@@ -158,7 +151,7 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "banned": False
             }
             save_authorized_chats()
-            await update.message.reply_text("Key hợp lệ! Đoạn chat này đã được cấp quyền duy nhất trong 24 giờ.")
+            await update.message.reply_text("Key hợp lệ! Đoạn chat này được cấp quyền trong 24 giờ.")
             logger.info(f"Chat {chat_id} được ủy quyền với key: {provided_key}")
             
             context.job_queue.run_once(
@@ -179,26 +172,26 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if authorized_chats[chat_id]["key_attempts"] >= 2:
                     authorized_chats[chat_id]["banned"] = True
             save_authorized_chats()
-            await update.message.reply_text(f"Key không hợp lệ. Vui lòng thử lại. (Còn {2 - authorized_chats[chat_id]['key_attempts']} lần thử)")
-            logger.warning(f"Chat {chat_id} cố gắng sử dụng key không hợp lệ: {provided_key}")
+            await update.message.reply_text(f"Key không hợp lệ. Còn {2 - authorized_chats[chat_id]['key_attempts']} lần thử.")
+            logger.warning(f"Chat {chat_id} sử dụng key không hợp lệ: {provided_key}")
     except Exception as e:
-        logger.error(f"Lỗi khi xử lý lệnh key trong chat {chat_id}: {e}")
+        logger.error(f"Lỗi khi xử lý lệnh key: {e}")
         await update.message.reply_text("Lỗi khi xử lý key. Vui lòng thử lại.")
-        await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi trong lệnh key cho chat {chat_id}: {e}")
+        await notify_error(context.application, ALLOWED_CHAT_ID, f"Lỗi trong lệnh key cho chat {chat_id}: {e}")
 
 async def remove_authorization(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
     if chat_id in authorized_chats:
         del authorized_chats[chat_id]
         save_authorized_chats()
         try:
-            await context.bot.send_message(chat_id=chat_id, text="Quyền truy cập của đoạn chat này đã hết hạn. Vui lòng nhập lại key bằng lệnh /key <key>.")
-            logger.info(f"Xóa quyền truy cập cho chat {chat_id} sau 24 giờ.")
+            await context.bot.send_message(chat_id=chat_id, text="Quyền truy cập đã hết hạn. Vui lòng nhập lại key bằng lệnh /key <key>.")
+            logger.info(f"Xóa quyền truy cập cho chat {chat_id}.")
         except TelegramError as e:
             logger.error(f"Lỗi khi gửi tin nhắn hết hạn đến chat {chat_id}: {e}")
-            await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi khi gửi tin nhắn hết hạn đến chat {chat_id}: {e}")
+            await notify_error(context.application, ALLOWED_CHAT_ID, f"Lỗi khi gửi tin nhắn hết hạn đến chat {chat_id}: {e}")
 
-# --- Lấy giá và khối lượng BTC với Retry ---
-@retry(stop=stop_after_attempt(5), wait=wait_fixed(5), before_sleep=lambda retry_state: logger.warning(f"Thử lại API Kraken lần {retry_state.attempt_number}/5..."))
+# --- Lấy giá và khối lượng BTC ---
+@retry(stop=stop_after_attempt(5), wait=wait_fixed(5))
 def get_btc_price_and_volume():
     global price_history, volume_history, high_history, low_history, open_history
     try:
@@ -213,7 +206,7 @@ def get_btc_price_and_volume():
         result = data.get('result', {})
         klines = result.get('XXBTZUSD', [])
         if not klines or len(klines) < 1:
-            logger.warning(f"Dữ liệu Kraken không đủ hoặc rỗng: nhận được {len(klines)} nến")
+            logger.warning(f"Dữ liệu Kraken rỗng: nhận được {len(klines)} nến")
             return None, None, None, None, None, None, None
         
         prices = [float(candle[4]) for candle in klines[-MAX_HISTORY:]]
@@ -231,14 +224,8 @@ def get_btc_price_and_volume():
         open_history = opens[-MAX_HISTORY:]
         
         return latest_price, latest_volume, prices, volumes, highs, lows, opens
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Yêu cầu API Kraken thất bại: {e}")
-        return None, None, None, None, None, None, None
-    except (ValueError, KeyError, IndexError) as e:
-        logger.error(f"Lỗi khi phân tích dữ liệu Kraken: {e}")
-        return None, None, None, None, None, None, None
     except Exception as e:
-        logger.error(f"Lỗi không mong muốn trong get_btc_price_and_volume: {e}")
+        logger.error(f"Lỗi khi lấy dữ liệu Kraken: {e}")
         return None, None, None, None, None, None, None
 
 # --- Tính VWAP ---
@@ -282,7 +269,7 @@ def calculate_fibonacci_levels(prices, period=100):
         fib_618 = high - diff * 0.618
         return fib_382, fib_618, diff
     except Exception as e:
-        logger.error(f"Lỗi khi tính mức Fibonacci: {e}")
+        logger.error(f"Lỗi khi tính Fibonacci: {e}")
         return None, None, None
 
 # --- Tính SMA ---
@@ -464,7 +451,6 @@ def predict_price_rf(prices, volumes, highs, lows):
         if len(X) < 10:
             return None
         model = RandomForestRegressor(n_estimators=100, random_state=42)
-        logger.info("Đang huấn luyện mô hình Random Forest...")
         model.fit(X, y)
         next_data = X.iloc[-1:].values
         return model.predict(next_data)[0]
@@ -553,11 +539,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 **Hướng dẫn sử dụng @mekiemtien102** 📖\n\n"
         "Danh sách lệnh khả dụng:\n"
         "/start - Khởi động bot và xem giới thiệu\n"
-        "/key <key> - Xác thực quyền truy cập cho chat (24 giờ, chỉ nhập được một lần duy nhất)\n"
+        "/key <key> - Xác thực quyền truy cập cho chat (24 giờ)\n"
         "/signals - Xem tín hiệu giao dịch BTC/USD\n"
         "/settings - Cài đặt API của coincex.io\n"
         "/set_up - Kiểm tra trạng thái thiết lập của bot\n"
-        "/help - Hiển thị danh sách lệnh (bạn đang xem)\n"
+        "/help - Hiển thị danh sách lệnh\n"
         "/cskh - Thông tin hỗ trợ khách hàng\n\n"
         "Bot sẽ tự động lưu lịch sử tín hiệu vào file price_history.csv."
     )
@@ -587,8 +573,8 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             latest_price, latest_volume, prices, volumes, highs, lows, opens = get_btc_price_and_volume()
             if latest_price is None:
-                await update.message.reply_text("Không thể lấy dữ liệu giá. Vui lòng thử lại hoặc kiểm tra kết nối.")
-                await notify_error(context, ALLOWED_CHAT_ID, "Không thể lấy dữ liệu giá từ API Kraken")
+                await update.message.reply_text("Không thể lấy dữ liệu giá. Vui lòng thử lại.")
+                await notify_error(context.application, ALLOWED_CHAT_ID, "Không thể lấy dữ liệu giá từ API Kraken")
                 return
 
             price_history = prices[-MAX_HISTORY:]
@@ -598,8 +584,8 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
             open_history = opens[-MAX_HISTORY:]
 
             if not price_history or not volume_history or not high_history or not low_history or not open_history:
-                await update.message.reply_text("Dữ liệu không đủ để phân tích. Vui lòng thử lại.")
-                await notify_error(context, ALLOWED_CHAT_ID, "Dữ liệu không đủ để phân tích")
+                await update.message.reply_text("Dữ liệu không đủ để phân tích.")
+                await notify_error(context.application, ALLOWED_CHAT_ID, "Dữ liệu không đủ để phân tích")
                 return
 
             sma_5 = calculate_sma(price_history, 5)
@@ -671,11 +657,11 @@ async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except TelegramError as e:
                 logger.error(f"Không thể gửi tin nhắn Telegram đến {chat_id}: {e}")
                 await update.message.reply_text("Lỗi khi gửi tín hiệu. Vui lòng thử lại.")
-                await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi khi gửi tín hiệu đến chat {chat_id}: {e}")
+                await notify_error(context.application, ALLOWED_CHAT_ID, f"Lỗi khi gửi tín hiệu đến chat {chat_id}: {e}")
         except Exception as e:
             logger.error(f"Lỗi trong lệnh signals: {e}")
             await update.message.reply_text("Lỗi khi xử lý tín hiệu. Vui lòng thử lại.")
-            await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi trong lệnh signals: {e}")
+            await notify_error(context.application, ALLOWED_CHAT_ID, f"Lỗi trong lệnh signals: {e}")
 
 # --- Lệnh Settings ---
 API_KEY, API_SECRET = range(2)
@@ -698,43 +684,12 @@ async def get_api_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     except TelegramError as e:
         logger.error(f"Không thể gửi xác nhận Telegram đến {update.effective_chat.id}: {e}")
-        await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi trong cài đặt API cho chat {update.effective_chat.id}: {e}")
+        await notify_error(context.application, ALLOWED_CHAT_ID, f"Lỗi trong cài đặt API: {e}")
         return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Đã hủy cài đặt.")
     return ConversationHandler.END
-
-# --- Endpoint kiểm tra sức khỏe ---
-async def health_check(request):
-    return web.Response(text="OK")
-
-# --- Xử lý Webhook ---
-async def webhook_handler(request):
-    global application
-    try:
-        data = await request.json()
-        if data:
-            update = Update.de_json(data, application.bot)
-            if update:
-                await application.process_update(update)
-        return web.Response(text="OK")
-    except Exception as e:
-        logger.error(f"Lỗi khi xử lý webhook: {e}")
-        if application:
-            await notify_error(application, ALLOWED_CHAT_ID, f"Lỗi webhook: {e}")
-        return web.Response(text="OK", status=200)
-
-# --- Thiết lập Webhook Server ---
-async def setup_webhook():
-    app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, webhook_handler)
-    app.router.add_get('/health', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT)
-    await site.start()
-    logger.info(f"Webhook server khởi động tại http://0.0.0.0:{WEBHOOK_PORT}")
 
 # --- Xác thực Token Telegram ---
 async def validate_token(token: str) -> bool:
@@ -748,7 +703,6 @@ async def validate_token(token: str) -> bool:
 
 # --- Hàm chính ---
 async def main():
-    global application
     if not await validate_token(TELEGRAM_TOKEN):
         logger.error("Bot không thể khởi động do token Telegram không hợp lệ.")
         return
@@ -756,7 +710,6 @@ async def main():
     try:
         logger.info("Đang tải danh sách chat được ủy quyền...")
         load_authorized_chats()
-        logger.info("Đã tải danh sách chat được ủy quyền thành công.")
         logger.info("Khởi tạo bot Telegram...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -777,57 +730,31 @@ async def main():
         ))
 
         logger.info("Đã thêm các trình xử lý lệnh thành công.")
-        logger.info("Đang thiết lập webhook...")
-        try:
-            await application.bot.set_webhook(url=WEBHOOK_URL)
-            logger.info(f"Thiết lập webhook thành công tại: {WEBHOOK_URL}")
-        except TelegramError as e:
-            logger.error(f"Không thể thiết lập webhook: {e}")
-            await notify_error(None, ALLOWED_CHAT_ID, f"Không thể thiết lập webhook: {e}")
-            return
-
+        logger.info("Đang khởi động bot với polling...")
         await application.initialize()
         await application.start()
-        await setup_webhook()
+        await application.updater.start_polling()
 
-        logger.info("Ứng dụng khởi động thành công.")
+        logger.info("Bot đã khởi động thành công.")
         try:
-            while True:
-                await asyncio.sleep(1)  # Giữ vòng lặp sự kiện chạy
+            await asyncio.Event().wait()  # Giữ bot chạy
         except KeyboardInterrupt:
             logger.info("Nhận tín hiệu tắt, đang dừng bot...")
         finally:
-            logger.info("Đang tắt ứng dụng...")
-            try:
-                await application.bot.delete_webhook()
-                logger.info("Webhook đã được xóa.")
-                await application.stop()
-                await application.shutdown()
-                logger.info("Tắt bot thành công.")
-            except Exception as e:
-                logger.error(f"Lỗi khi tắt: {e}")
+            logger.info("Đang tắt bot...")
+            await application.updater.stop()
+            await application.stop()
+            await application.shutdown()
+            logger.info("Bot đã tắt thành công.")
     except Exception as e:
         logger.error(f"Không thể chạy bot: {e}")
-        await notify_error(None, ALLOWED_CHAT_ID, f"Không thể khởi động bot: {e}")
+        await notify_error(application, ALLOWED_CHAT_ID, f"Không thể khởi động bot: {e}")
 
 # --- Chạy bot ---
 if __name__ == '__main__':
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(main())
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot bị dừng bởi người dùng.")
     except Exception as e:
         logger.error(f"Lỗi khi chạy bot: {e}")
-    finally:
-        if loop.is_running():
-            pending = asyncio.all_tasks(loop=loop)
-            for task in pending:
-                task.cancel()
-            try:
-                loop.run_until_complete(loop.shutdown_asyncgens())
-            except Exception:
-                pass
-            loop.close()
-        logger.info("Ứng dụng đã được chấm dứt hoàn toàn.")
