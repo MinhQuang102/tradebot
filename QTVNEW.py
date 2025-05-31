@@ -22,22 +22,25 @@ logger = logging.getLogger(__name__)
 # --- Khởi tạo Lock cho phân tích đồng thời ---
 analysis_lock = asyncio.Lock()
 
-# --- Load cấu hình từ biến môi trường ---
+# --- Thiết lập biến môi trường trực tiếp trong mã ---
+# TODO: Thay các giá trị sau bằng giá trị thực tế của bạn
+TELEGRAM_TOKEN = "7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk"  # Lấy từ BotFather trên Telegram
+ALLOWED_CHAT_ID = "-1002554202438"  # ID của nhóm/người dùng được phép (dùng @userinfobot để lấy)
+VALID_KEY = "10092006"  # Key xác thực (mặc định: 10092006)
+WEBHOOK_URL = "https://your-app.onrender.com/webhook"  # URL của ứng dụng trên Render
+
+# Kiểm tra xem các biến cần thiết đã được thiết lập chưa
 try:
-    TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-    ALLOWED_CHAT_ID = os.environ.get('ALLOWED_CHAT_ID')
-    VALID_KEY = os.environ.get('VALID_KEY', '10092006')
-    
     if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
-        logger.error("TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID không được thiết lập trong biến môi trường")
-        raise ValueError("Thiếu TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID trong biến môi trường")
+        logger.error("TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID không được thiết lập")
+        raise ValueError("Thiếu TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID")
 except Exception as e:
-    logger.error(f"Lỗi khi tải biến môi trường: {e}")
+    logger.error(f"Lỗi khi kiểm tra biến môi trường: {e}")
     raise
 
 # --- Hằng số ---
 KRAKEN_OHLC_URL = 'https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1'
-WEBHOOK_PORT = int(os.environ.get("PORT", 8080))
+WEBHOOK_PORT = int(os.environ.get("PORT", 8080))  # Lấy từ biến môi trường PORT nếu có, mặc định 8080
 WEBHOOK_PATH = "/webhook"
 AUTHORIZED_CHATS_FILE = "authorized_chats.json"
 HISTORY_FILE = "price_history.csv"
@@ -66,7 +69,7 @@ def load_authorized_chats():
     global authorized_chats
     try:
         if os.path.exists(AUTHORIZED_CHATS_FILE):
-            with open(AUTHORIZED_CHATS_FILE, 'r', encoding='nutf-8') as f:
+            with open(AUTHORIZED_CHATS_FILE, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
                 authorized_chats = {str(k): v for k, v in loaded.items()}
                 if len(authorized_chats) > 1:
@@ -146,26 +149,7 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     provided_key = context.args[0]
     try:
-        valid_key = os.environ.get('VALID_KEY', '10092006')
-        
-        if chat_id in authorized_chats:
-            auth_info = authorized_chats[chat_id]
-            if auth_info.get("banned", False):
-                await update.message.reply_text("Đoạn chat này đã bị cấm do nhập sai key quá số lần cho phép.")
-                logger.warning(f"Chat {chat_id} bị cấm.")
-                return
-            if auth_info.get("key_used", False):
-                await update.message.reply_text("Đoạn chat này đã sử dụng key một lần và không thể nhập lại.")
-                logger.warning(f"Chat {chat_id} cố gắng sử dụng lại key.")
-                return
-            if auth_info["key_attempts"] >= 2:
-                authorized_chats[chat_id]["banned"] = True
-                save_authorized_chats()
-                await update.message.reply_text("Đoạn chat này đã bị cấm do nhập sai key quá số lần cho phép.")
-                logger.warning(f"Chat {chat_id} bị cấm do nhập sai key nhiều lần.")
-                return
-        
-        if provided_key == valid_key:
+        if provided_key == VALID_KEY:
             authorized_chats.clear()
             authorized_chats[chat_id] = {
                 "timestamp": current_time,
@@ -794,13 +778,9 @@ async def main():
 
         logger.info("Đã thêm các trình xử lý lệnh thành công.")
         logger.info("Đang thiết lập webhook...")
-        webhook_url = os.environ.get("WEBHOOK_URL")
-        if not webhook_url:
-            logger.error("WEBHOOK_URL chưa được thiết lập trong biến môi trường. Vui lòng thiết lập nó (ví dụ: https://your-app.onrender.com/webhook).")
-            return
         try:
-            await application.bot.set_webhook(url=webhook_url)
-            logger.info(f"Thiết lập webhook thành công tại: {webhook_url}")
+            await application.bot.set_webhook(url=WEBHOOK_URL)
+            logger.info(f"Thiết lập webhook thành công tại: {WEBHOOK_URL}")
         except TelegramError as e:
             logger.error(f"Không thể thiết lập webhook: {e}")
             await notify_error(None, ALLOWED_CHAT_ID, f"Không thể thiết lập webhook: {e}")
