@@ -15,24 +15,27 @@ import logging
 from tenacity import retry, stop_after_attempt, wait_fixed
 from aiohttp import web
 
-# --- Setup Logging ---
+# --- Thiết lập Logging ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Load Configuration from Environment Variables ---
+# --- Khởi tạo Lock cho phân tích đồng thời ---
+analysis_lock = asyncio.Lock()
+
+# --- Load cấu hình từ biến môi trường ---
 try:
-    TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')  # Giá trị sẽ được đặt trên Render: 7608384401:AAHKfX5KlBl5CZTaoKSDwwdATmbY8Z34vRk
-    ALLOWED_CHAT_ID = os.environ.get('ALLOWED_CHAT_ID')  # Giá trị sẽ được đặt trên Render: -1002554202438
-    VALID_KEY = os.environ.get('VALID_KEY', '10092006')  # Giá trị mặc định, có thể thay đổi trên Render nếu cần
-    NEWS_API_KEY = os.environ.get('NEWS_API_KEY', 'af9b016f3f044a6f84453bbe1a526f0b')  # Giá trị mặc định, có thể thay đổi trên Render nếu cần
+    TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+    ALLOWED_CHAT_ID = os.environ.get('ALLOWED_CHAT_ID')
+    VALID_KEY = os.environ.get('VALID_KEY', '10092006')
     
     if not TELEGRAM_TOKEN or not ALLOWED_CHAT_ID:
-        raise ValueError("TELEGRAM_TOKEN or ALLOWED_CHAT_ID missing in environment variables")
+        logger.error("TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID không được thiết lập trong biến môi trường")
+        raise ValueError("Thiếu TELEGRAM_TOKEN hoặc ALLOWED_CHAT_ID trong biến môi trường")
 except Exception as e:
-    logger.error(f"Error loading environment variables: {e}")
+    logger.error(f"Lỗi khi tải biến môi trường: {e}")
     raise
 
-# --- Constants ---
+# --- Hằng số ---
 KRAKEN_OHLC_URL = 'https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1'
 WEBHOOK_PORT = int(os.environ.get("PORT", 8080))
 WEBHOOK_PATH = "/webhook"
@@ -40,7 +43,7 @@ AUTHORIZED_CHATS_FILE = "authorized_chats.json"
 HISTORY_FILE = "price_history.csv"
 MAX_HISTORY = 100
 
-# --- Global Variables ---
+# --- Biến toàn cục ---
 price_history = []
 volume_history = []
 high_history = []
@@ -49,22 +52,21 @@ open_history = []
 support_level = None
 resistance_level = None
 authorized_chats = {}
-is_analyzing = False
 application = None
 
-# --- Save and Load Authorized Chats ---
+# --- Lưu và tải danh sách chat được ủy quyền ---
 def save_authorized_chats():
     try:
         with open(AUTHORIZED_CHATS_FILE, 'w', encoding='utf-8') as f:
             json.dump(authorized_chats, f)
     except Exception as e:
-        logger.error(f"Error saving authorized_chats: {e}")
+        logger.error(f"Lỗi khi lưu authorized_chats: {e}")
 
 def load_authorized_chats():
     global authorized_chats
     try:
         if os.path.exists(AUTHORIZED_CHATS_FILE):
-            with open(AUTHORIZED_CHATS_FILE, 'r', encoding='utf-8') as f:
+            with open(AUTHORIZED_CHATS_FILE, 'r', encoding='nutf-8') as f:
                 loaded = json.load(f)
                 authorized_chats = {str(k): v for k, v in loaded.items()}
                 if len(authorized_chats) > 1:
@@ -79,20 +81,21 @@ def load_authorized_chats():
                         authorized_chats = {}
                     save_authorized_chats()
     except Exception as e:
-        logger.error(f"Error loading authorized_chats: {e}")
+        logger.error(f"Lỗi khi tải authorized_chats: {e}")
         authorized_chats = {}
 
-# --- Notify Error to Admin ---
+# --- Thông báo lỗi cho admin ---
 async def notify_error(context, chat_id: str, error: str):
-    if not context:
-        logger.warning("Context is None, cannot send error notification")
+    global application
+    if not application:
+        logger.warning("Application là None, không thể gửi thông báo lỗi")
         return
     try:
-        await context.bot.send_message(chat_id=chat_id, text=f"Lỗi bot: {error}")
+        await application.bot.send_message(chat_id=chat_id, text=f"Lỗi bot: {error}")
     except TelegramError as e:
         logger.error(f"Không thể gửi thông báo lỗi: {e}")
 
-# --- Check if chat_id is allowed and user is admin in group ---
+# --- Kiểm tra chat_id có được phép và user là admin trong nhóm ---
 async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
@@ -105,7 +108,7 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         auth_info = authorized_chats[chat_id]
         if auth_info.get("banned", False):
             await update.message.reply_text("Đoạn chat này đã bị cấm do nhập sai key quá số lần cho phép.")
-            logger.warning(f"Chat {chat_id} is banned.")
+            logger.warning(f"Chat {chat_id} bị cấm.")
             return False
         if current_time - auth_info["timestamp"] < 24 * 3600:
             if update.effective_chat.type in ['group', 'supergroup']:
@@ -113,12 +116,12 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     member = await update.effective_chat.get_member(user_id)
                     if member.status not in ['administrator', 'creator']:
                         await update.message.reply_text("Chỉ quản trị viên của nhóm mới có thể sử dụng các lệnh của bot.")
-                        logger.warning(f"User {user_id} in chat {chat_id} is not an admin.")
+                        logger.warning(f"User {user_id} trong chat {chat_id} không phải admin.")
                         return False
                 except TelegramError as e:
-                    logger.error(f"Error checking admin status for user {user_id} in chat {chat_id}: {e}")
+                    logger.error(f"Lỗi khi kiểm tra trạng thái admin cho user {user_id} trong chat {chat_id}: {e}")
                     await update.message.reply_text("Lỗi khi kiểm tra quyền quản trị viên. Vui lòng thử lại.")
-                    await notify_error(context, ALLOWED_CHAT_ID, f"Error checking admin status in chat {chat_id}: {e}")
+                    await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi kiểm tra trạng thái admin trong chat {chat_id}: {e}")
                     return False
             return True
         else:
@@ -128,7 +131,7 @@ async def is_allowed_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("Đoạn chat này không có quyền sử dụng bot. Vui lòng nhập key bằng lệnh /key <key>.")
     return False
 
-# --- Key Command ---
+# --- Lệnh Key ---
 async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     current_time = time.time()
@@ -149,17 +152,17 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             auth_info = authorized_chats[chat_id]
             if auth_info.get("banned", False):
                 await update.message.reply_text("Đoạn chat này đã bị cấm do nhập sai key quá số lần cho phép.")
-                logger.warning(f"Chat {chat_id} is banned.")
+                logger.warning(f"Chat {chat_id} bị cấm.")
                 return
             if auth_info.get("key_used", False):
                 await update.message.reply_text("Đoạn chat này đã sử dụng key một lần và không thể nhập lại.")
-                logger.warning(f"Chat {chat_id} attempted to reuse key.")
+                logger.warning(f"Chat {chat_id} cố gắng sử dụng lại key.")
                 return
             if auth_info["key_attempts"] >= 2:
                 authorized_chats[chat_id]["banned"] = True
                 save_authorized_chats()
                 await update.message.reply_text("Đoạn chat này đã bị cấm do nhập sai key quá số lần cho phép.")
-                logger.warning(f"Chat {chat_id} banned due to multiple key attempts.")
+                logger.warning(f"Chat {chat_id} bị cấm do nhập sai key nhiều lần.")
                 return
         
         if provided_key == valid_key:
@@ -172,7 +175,7 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             save_authorized_chats()
             await update.message.reply_text("Key hợp lệ! Đoạn chat này đã được cấp quyền duy nhất trong 24 giờ.")
-            logger.info(f"Chat {chat_id} authorized with key: {provided_key}")
+            logger.info(f"Chat {chat_id} được ủy quyền với key: {provided_key}")
             
             context.job_queue.run_once(
                 callback=lambda ctx: remove_authorization(ctx, chat_id),
@@ -193,11 +196,11 @@ async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     authorized_chats[chat_id]["banned"] = True
             save_authorized_chats()
             await update.message.reply_text(f"Key không hợp lệ. Vui lòng thử lại. (Còn {2 - authorized_chats[chat_id]['key_attempts']} lần thử)")
-            logger.warning(f"Chat {chat_id} attempted to use invalid key: {provided_key}")
+            logger.warning(f"Chat {chat_id} cố gắng sử dụng key không hợp lệ: {provided_key}")
     except Exception as e:
-        logger.error(f"Error processing key command in chat {chat_id}: {e}")
+        logger.error(f"Lỗi khi xử lý lệnh key trong chat {chat_id}: {e}")
         await update.message.reply_text("Lỗi khi xử lý key. Vui lòng thử lại.")
-        await notify_error(context, ALLOWED_CHAT_ID, f"Error in key command for chat {chat_id}: {e}")
+        await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi trong lệnh key cho chat {chat_id}: {e}")
 
 async def remove_authorization(context: ContextTypes.DEFAULT_TYPE, chat_id: str):
     if chat_id in authorized_chats:
@@ -205,13 +208,13 @@ async def remove_authorization(context: ContextTypes.DEFAULT_TYPE, chat_id: str)
         save_authorized_chats()
         try:
             await context.bot.send_message(chat_id=chat_id, text="Quyền truy cập của đoạn chat này đã hết hạn. Vui lòng nhập lại key bằng lệnh /key <key>.")
-            logger.info(f"Authorization removed for chat {chat_id} after 24 hours.")
+            logger.info(f"Xóa quyền truy cập cho chat {chat_id} sau 24 giờ.")
         except TelegramError as e:
-            logger.error(f"Error sending expiration message to chat {chat_id}: {e}")
-            await notify_error(context, ALLOWED_CHAT_ID, f"Error sending expiration message to chat {chat_id}: {e}")
+            logger.error(f"Lỗi khi gửi tin nhắn hết hạn đến chat {chat_id}: {e}")
+            await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi khi gửi tin nhắn hết hạn đến chat {chat_id}: {e}")
 
-# --- Get BTC Price and Volume with Retry ---
-@retry(stop=stop_after_attempt(5), wait=wait_fixed(5), before_sleep=lambda retry_state: logger.warning(f"Retrying Kraken API call {retry_state.attempt_number}/5..."))
+# --- Lấy giá và khối lượng BTC với Retry ---
+@retry(stop=stop_after_attempt(5), wait=wait_fixed(5), before_sleep=lambda retry_state: logger.warning(f"Thử lại API Kraken lần {retry_state.attempt_number}/5..."))
 def get_btc_price_and_volume():
     global price_history, volume_history, high_history, low_history, open_history
     try:
@@ -220,13 +223,13 @@ def get_btc_price_and_volume():
         data = response.json()
         
         if 'error' in data and data['error']:
-            logger.warning(f"Kraken API error: {data['error']}")
+            logger.warning(f"Lỗi API Kraken: {data['error']}")
             return None, None, None, None, None, None, None
         
         result = data.get('result', {})
         klines = result.get('XXBTZUSD', [])
         if not klines or len(klines) < 1:
-            logger.warning(f"Kraken data insufficient or empty: {len(klines)} candles received")
+            logger.warning(f"Dữ liệu Kraken không đủ hoặc rỗng: nhận được {len(klines)} nến")
             return None, None, None, None, None, None, None
         
         prices = [float(candle[4]) for candle in klines[-MAX_HISTORY:]]
@@ -245,16 +248,16 @@ def get_btc_price_and_volume():
         
         return latest_price, latest_volume, prices, volumes, highs, lows, opens
     except requests.exceptions.RequestException as e:
-        logger.error(f"Kraken API request failed: {e}")
+        logger.error(f"Yêu cầu API Kraken thất bại: {e}")
         return None, None, None, None, None, None, None
     except (ValueError, KeyError, IndexError) as e:
-        logger.error(f"Error parsing Kraken data: {e}")
+        logger.error(f"Lỗi khi phân tích dữ liệu Kraken: {e}")
         return None, None, None, None, None, None, None
     except Exception as e:
-        logger.error(f"Unexpected error in get_btc_price_and_volume: {e}")
+        logger.error(f"Lỗi không mong muốn trong get_btc_price_and_volume: {e}")
         return None, None, None, None, None, None, None
 
-# --- Calculate VWAP ---
+# --- Tính VWAP ---
 def calculate_vwap(prices, volumes, highs, lows, period=14):
     if len(prices) < period or len(volumes) < period:
         return None
@@ -263,10 +266,10 @@ def calculate_vwap(prices, volumes, highs, lows, period=14):
         vwap = sum(typical_prices[i] * volumes[i] for i in range(-period, 0)) / sum(volumes[-period:])
         return vwap
     except Exception as e:
-        logger.error(f"Error calculating VWAP: {e}")
+        logger.error(f"Lỗi khi tính VWAP: {e}")
         return None
 
-# --- Calculate ATR ---
+# --- Tính ATR ---
 def calculate_atr(highs, lows, closes, period=14):
     if len(closes) < period + 1:
         return None
@@ -280,10 +283,10 @@ def calculate_atr(highs, lows, closes, period=14):
             tr_list.append(tr)
         return sum(tr_list) / period
     except Exception as e:
-        logger.error(f"Error calculating ATR: {e}")
+        logger.error(f"Lỗi khi tính ATR: {e}")
         return None
 
-# --- Calculate Fibonacci Retracement Levels ---
+# --- Tính mức Fibonacci Retracement ---
 def calculate_fibonacci_levels(prices, period=100):
     if len(prices) < period:
         return None, None, None
@@ -295,20 +298,20 @@ def calculate_fibonacci_levels(prices, period=100):
         fib_618 = high - diff * 0.618
         return fib_382, fib_618, diff
     except Exception as e:
-        logger.error(f"Error calculating Fibonacci levels: {e}")
+        logger.error(f"Lỗi khi tính mức Fibonacci: {e}")
         return None, None, None
 
-# --- Calculate SMA ---
+# --- Tính SMA ---
 def calculate_sma(prices, period=5):
     if len(prices) < period:
         return None
     try:
         return sum(prices[-period:]) / period
     except Exception as e:
-        logger.error(f"Error calculating SMA: {e}")
+        logger.error(f"Lỗi khi tính SMA: {e}")
         return None
 
-# --- Calculate EMA ---
+# --- Tính EMA ---
 def calculate_ema(prices, period):
     if len(prices) < period:
         return None
@@ -319,10 +322,10 @@ def calculate_ema(prices, period):
             ema = (price - ema) * multiplier + ema
         return ema
     except Exception as e:
-        logger.error(f"Error calculating EMA: {e}")
+        logger.error(f"Lỗi khi tính EMA: {e}")
         return None
 
-# --- Calculate MACD ---
+# --- Tính MACD ---
 def calculate_macd(prices):
     if len(prices) < 26:
         return None, None
@@ -332,19 +335,22 @@ def calculate_macd(prices):
         if ema_12 is None or ema_26 is None:
             return None, None
         macd = ema_12 - ema_26
-        macd_line = [
-            calculate_ema(prices[max(0, i-12):i], 12) - calculate_ema(prices[max(0, i-26):i], 26)
-            for i in range(26, len(prices))
-        ]
+        macd_line = []
+        for i in range(26, len(prices)):
+            if len(prices[max(0, i-12):i]) >= 12 and len(prices[max(0, i-26):i]) >= 26:
+                ema_12_i = calculate_ema(prices[max(0, i-12):i], 12)
+                ema_26_i = calculate_ema(prices[max(0, i-26):i], 26)
+                if ema_12_i is not None and ema_26_i is not None:
+                    macd_line.append(ema_12_i - ema_26_i)
         if len(macd_line) < 9:
             return macd, None
         signal = calculate_ema(macd_line[-9:], 9)
         return macd, signal
     except Exception as e:
-        logger.error(f"Error calculating MACD: {e}")
+        logger.error(f"Lỗi khi tính MACD: {e}")
         return None, None
 
-# --- Calculate RSI ---
+# --- Tính RSI ---
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return np.nan
@@ -365,10 +371,10 @@ def calculate_rsi(prices, period=14):
             rsi = 100 - (100 / (1 + rs))
         return rsi
     except Exception as e:
-        logger.error(f"Error calculating RSI: {e}")
+        logger.error(f"Lỗi khi tính RSI: {e}")
         return np.nan
 
-# --- Calculate Stochastic Oscillator ---
+# --- Tính Stochastic Oscillator ---
 def calculate_stochastic(prices, highs, lows, k_period=14, d_period=3):
     if len(prices) < k_period or len(highs) < k_period or len(lows) < k_period:
         return None, None
@@ -379,21 +385,21 @@ def calculate_stochastic(prices, highs, lows, k_period=14, d_period=3):
             k_value = 50
         else:
             k_value = 100 * (prices[-1] - low_min) / (high_max - low_min)
-        k_values = []
-        for i in range(d_period):
+        k_values = [k_value]
+        for i in range(1, d_period):
             if len(prices[:-i]) >= k_period:
-                low_min_i = min(lows[-k_period-i:-i]) if lows[-k_period-i:-i] else low_min
-                high_max_i = max(highs[-k_period-i:-i]) if highs[-k_period-i:-i] else high_max
+                low_min_i = min(lows[-k_period-i:-i])
+                high_max_i = max(highs[-k_period-i:-i])
                 if high_max_i != low_min_i:
                     k = 100 * (prices[-1-i] - low_min_i) / (high_max_i - low_min_i)
                     k_values.append(k)
-        d_value = np.mean([k_value] + k_values) if k_values else None
+        d_value = np.mean(k_values) if k_values else None
         return k_value, d_value
     except Exception as e:
-        logger.error(f"Error calculating Stochastic: {e}")
+        logger.error(f"Lỗi khi tính Stochastic: {e}")
         return None, None
 
-# --- Calculate Bollinger Bands ---
+# --- Tính Bollinger Bands ---
 def calculate_bollinger_bands(prices, period=20, num_std=2):
     if len(prices) < period:
         return None, None, None
@@ -404,10 +410,10 @@ def calculate_bollinger_bands(prices, period=20, num_std=2):
         lower_band = sma - num_std * std
         return sma, upper_band, lower_band
     except Exception as e:
-        logger.error(f"Error calculating Bollinger Bands: {e}")
+        logger.error(f"Lỗi khi tính Bollinger Bands: {e}")
         return None, None, None
 
-# --- Detect Candlestick Patterns ---
+# --- Phát hiện mô hình nến ---
 def detect_candlestick_pattern(highs, lows, opens, closes):
     if len(closes) < 2:
         return None
@@ -416,10 +422,10 @@ def detect_candlestick_pattern(highs, lows, opens, closes):
             return "Doji - Tín hiệu đảo chiều tiềm năng"
         return None
     except Exception as e:
-        logger.error(f"Error detecting candlestick pattern: {e}")
+        logger.error(f"Lỗi khi phát hiện mô hình nến: {e}")
         return None
 
-# --- Calculate Volume Spike ---
+# --- Tính Volume Spike ---
 def calculate_volume_spike(volumes, period=5, threshold=1.5):
     if len(volumes) < period:
         return False
@@ -427,10 +433,10 @@ def calculate_volume_spike(volumes, period=5, threshold=1.5):
         avg_volume = np.mean(volumes[-period:])
         return volumes[-1] > avg_volume * threshold
     except Exception as e:
-        logger.error(f"Error calculating volume spike: {e}")
+        logger.error(f"Lỗi khi tính Volume Spike: {e}")
         return False
 
-# --- Detect Breakout ---
+# --- Phát hiện Breakout ---
 def detect_breakout(prices, highs, lows, period=20):
     if len(prices) < period:
         return None
@@ -446,10 +452,10 @@ def detect_breakout(prices, highs, lows, period=20):
             return "Breakout Down"
         return None
     except Exception as e:
-        logger.error(f"Error detecting breakout: {e}")
+        logger.error(f"Lỗi khi phát hiện Breakout: {e}")
         return None
 
-# --- Predict Price with Random Forest ---
+# --- Dự đoán giá với Random Forest ---
 def predict_price_rf(prices, volumes, highs, lows):
     if len(prices) < 30:
         return None
@@ -474,15 +480,15 @@ def predict_price_rf(prices, volumes, highs, lows):
         if len(X) < 10:
             return None
         model = RandomForestRegressor(n_estimators=100, random_state=42)
-        logger.info("Training Random Forest model...")
+        logger.info("Đang huấn luyện mô hình Random Forest...")
         model.fit(X, y)
         next_data = X.iloc[-1:].values
         return model.predict(next_data)[0]
     except Exception as e:
-        logger.error(f"Error predicting price with Random Forest: {e}")
+        logger.error(f"Lỗi khi dự đoán giá với Random Forest: {e}")
         return None
 
-# --- Detect Support and Resistance ---
+# --- Phát hiện hỗ trợ và kháng cự ---
 def detect_support_resistance(price):
     global support_level, resistance_level
     try:
@@ -496,20 +502,20 @@ def detect_support_resistance(price):
             return "Cảnh báo: Chạm vùng kháng cự mạnh!"
         return "Ổn định"
     except Exception as e:
-        logger.error(f"Error detecting support/resistance: {e}")
+        logger.error(f"Lỗi khi phát hiện hỗ trợ/kháng cự: {e}")
         return "Ổn định"
 
-# --- Format Value ---
+# --- Định dạng giá trị ---
 def format_value(value, decimals=2):
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return "N/A"
     try:
         return f"{value:.{decimals}f}"
     except Exception as e:
-        logger.error(f"Error formatting value: {e}")
+        logger.error(f"Lỗi khi định dạng giá trị: {e}")
         return "N/A"
 
-# --- Save Data to CSV ---
+# --- Lưu dữ liệu vào CSV ---
 def save_to_csv(price, trend, win_rate, market_status, chat_id):
     try:
         file_exists = os.path.exists(HISTORY_FILE)
@@ -517,11 +523,11 @@ def save_to_csv(price, trend, win_rate, market_status, chat_id):
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow(['Time', 'ChatID', 'Price', 'Trend', 'WinRate', 'MarketStatus'])
-            writer.writerow([datetime.now().strftime("%H:%M:%S %d-%m-%Y"), chat_id, price, trend, win_rate, market_status])
+            writer.writerow([datetime.now().strftime("%H:%M:%S %d-%m-%Y"), chat_id, format_value(price), trend, format_value(win_rate), market_status])
     except Exception as e:
-        logger.error(f"Error saving to CSV: {e}")
+        logger.error(f"Lỗi khi lưu vào CSV: {e}")
 
-# --- Start Command ---
+# --- Lệnh Start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await update.message.reply_text(
@@ -530,7 +536,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Nếu bạn cần hỗ trợ, hãy dùng /cskh."
     )
 
-# --- Set Up Command ---
+# --- Lệnh Set Up ---
 async def set_up(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     current_time = time.time()
@@ -557,7 +563,7 @@ async def set_up(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(message)
 
-# --- Help Command ---
+# --- Lệnh Help ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_message = (
         "📖 **Hướng dẫn sử dụng @mekiemtien102** 📖\n\n"
@@ -573,7 +579,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_message)
 
-# --- CSKH Command ---
+# --- Lệnh CSKH ---
 async def cskh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cskh_message = (
         "📞 **Hỗ trợ khách hàng @mekiemtien102** 📞\n\n"
@@ -585,115 +591,109 @@ async def cskh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(cskh_message)
 
-# --- Signals Command ---
+# --- Lệnh Signals ---
 async def signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global price_history, volume_history, high_history, low_history, open_history, is_analyzing
+    global price_history, volume_history, high_history, low_history, open_history
     chat_id = str(update.effective_chat.id)
 
     if not await is_allowed_chat(update, context):
         return
     
-    if is_analyzing:
-        await update.message.reply_text("Phân tích đang diễn ra, vui lòng đợi.")
-        return
-
-    is_analyzing = True
-    try:
-        latest_price, latest_volume, prices, volumes, highs, lows, opens = get_btc_price_and_volume()
-        if latest_price is None:
-            await update.message.reply_text("Không thể lấy dữ liệu giá. Vui lòng thử lại hoặc kiểm tra kết nối.")
-            await notify_error(context, ALLOWED_CHAT_ID, "Failed to fetch price data from Kraken API")
-            return
-
-        price_history = prices[-MAX_HISTORY:]
-        volume_history = volumes[-MAX_HISTORY:]
-        high_history = highs[-MAX_HISTORY:]
-        low_history = lows[-MAX_HISTORY:]
-        open_history = opens[-MAX_HISTORY:]
-
-        if not price_history or not volume_history or not high_history or not low_history or not open_history:
-            await update.message.reply_text("Dữ liệu không đủ để phân tích. Vui lòng thử lại.")
-            await notify_error(context, ALLOWED_CHAT_ID, "Insufficient data for analysis")
-            return
-
-        sma_5 = calculate_sma(price_history, 5)
-        sma_20, upper_band, lower_band = calculate_bollinger_bands(price_history)
-        macd, signal = calculate_macd(price_history)
-        rsi = calculate_rsi(price_history)
-        k_value, d_value = calculate_stochastic(price_history, high_history, low_history)
-        vwap = calculate_vwap(price_history, volume_history, high_history, low_history)
-        atr = calculate_atr(high_history, low_history, price_history)
-        fib_382, fib_618, fib_diff = calculate_fibonacci_levels(price_history)
-        predicted_price = predict_price_rf(price_history, volume_history, high_history, low_history)
-        candlestick_pattern = detect_candlestick_pattern(high_history, low_history, open_history, price_history)
-        volume_trend = "TĂNG" if sum(volume_history[-5:]) > sum(volume_history[-10:-5]) else "GIẢM"
-        volume_spike = calculate_volume_spike(volume_history)
-        breakout = detect_breakout(price_history, high_history, low_history)
-        support_resistance_signal = detect_support_resistance(latest_price)
-
-        buy_signals = [
-            (1.5 if macd is not None and signal is not None and macd > signal else 0, "MACD Buy"),
-            (1.2 if latest_price is not None and sma_5 is not None and latest_price > sma_5 else 0, "SMA Buy"),
-            (1.5 if volume_trend == "TĂNG" else 0, "Volume Up"),
-            (1.5 if lower_band is not None and latest_price <= lower_band else 0, "Bollinger Lower"),
-            (2.0 if rsi is not None and not np.isnan(rsi) and rsi < 30 else 0, "RSI Oversold"),
-            (2.5 if rsi is not None and not np.isnan(rsi) and rsi < 20 else 0, "RSI Strongly Oversold"),
-            (1.2 if k_value is not None and d_value is not None and k_value < 20 else 0, "Stochastic Oversold"),
-            (1.5 if vwap is not None and latest_price < vwap else 0, "Below VWAP"),
-            (1.3 if fib_618 is not None and latest_price <= fib_618 else 0, "Fib 61.8%"),
-            (1.5 if candlestick_pattern == "Doji - Tín hiệu đảo chiều tiềm năng" else 0, "Doji Buy"),
-            (2.0 if volume_spike else 0, "Volume Spike Buy"),
-            (2.5 if breakout == "Breakout Up" else 0, "Breakout Up")
-        ]    
-        sell_signals = [
-            (1.5 if macd is not None and signal is not None and macd < signal else 0, "MACD Sell"),
-            (1.2 if latest_price is not None and sma_5 is not None and latest_price < sma_5 else 0, "SMA Sell"),
-            (1.5 if volume_trend == "GIẢM" else 0, "Volume Down"),
-            (1.5 if upper_band is not None and latest_price >= upper_band else 0, "Bollinger Upper"),
-            (2.0 if rsi is not None and not np.isnan(rsi) and rsi > 70 else 0, "RSI Overbought"),
-            (2.5 if rsi is not None and not np.isnan(rsi) and rsi > 80 else 0, "RSI Strongly Overbought"),
-            (1.2 if k_value is not None and d_value is not None and k_value > 80 else 0, "Stochastic Overbought"),
-            (1.5 if vwap is not None and latest_price > vwap else 0, "Above VWAP"),
-            (1.3 if fib_382 is not None and latest_price >= fib_382 else 0, "Fib 38.2%"),
-            (1.5 if candlestick_pattern == "Doji - Tín hiệu đảo chiều tiềm năng" else 0, "Doji Sell"),
-            (2.0 if volume_spike else 0, "Volume Spike Sell"),
-            (2.5 if breakout == "Breakout Down" else 0, "Breakout Down")
-        ]
-
-        buy_score = sum(weight for weight, _ in buy_signals)
-        sell_score = sum(weight for weight, _ in sell_signals)
-
-        trend = "MUA" if buy_score > sell_score else "BÁN" if sell_score > buy_score else "CHỜ LỆNH"
-        total_score = buy_score + sell_score
-        win_rate = ((buy_score / total_score) * 100 if trend == "MUA" else (sell_score / total_score) * 100 if trend == "BÁN" else 50) if total_score > 0 else 50
-
-        latest_price_str = format_value(latest_price)
-        win_rate_str = format_value(win_rate)
-
-        report = (
-            f"🏗️ COINCEX — BTC/USD 🌐\n"
-            f"Time: {datetime.now().strftime('%H:%M:%S %d-%m-%Y')}\n"
-            f"Lệnh: {trend}\n"
-            f"Tỷ lệ thắng: {win_rate_str}%\n"
-            f"Giá hiện tại: {latest_price_str} USD"
-        )
-
+    async with analysis_lock:
         try:
-            await update.message.reply_text(report)
-            logger.info(f"Signals report sent to chat {chat_id}")
-            save_to_csv(latest_price, trend, win_rate, support_resistance_signal, chat_id)
-        except TelegramError as e:
-            logger.error(f"Failed to send Telegram message to {chat_id}: {e}")
-            await update.message.reply_text("Lỗi khi gửi tín hiệu. Vui lòng thử lại.")
-            await notify_error(context, ALLOWED_CHAT_ID, f"Error sending signal to chat {chat_id}: {e}")
-    except Exception as e:
-        logger.error(f"Error in signals command: {e}")
-        await update.message.reply_text("Lỗi khi xử lý tín hiệu. Vui lòng thử lại.")
-        await notify_error(context, ALLOWED_CHAT_ID, f"Error in signals command: {e}")
-    finally:
-        is_analyzing = False
+            latest_price, latest_volume, prices, volumes, highs, lows, opens = get_btc_price_and_volume()
+            if latest_price is None:
+                await update.message.reply_text("Không thể lấy dữ liệu giá. Vui lòng thử lại hoặc kiểm tra kết nối.")
+                await notify_error(context, ALLOWED_CHAT_ID, "Không thể lấy dữ liệu giá từ API Kraken")
+                return
 
-# --- Settings Command ---
+            price_history = prices[-MAX_HISTORY:]
+            volume_history = volumes[-MAX_HISTORY:]
+            high_history = highs[-MAX_HISTORY:]
+            low_history = lows[-MAX_HISTORY:]
+            open_history = opens[-MAX_HISTORY:]
+
+            if not price_history or not volume_history or not high_history or not low_history or not open_history:
+                await update.message.reply_text("Dữ liệu không đủ để phân tích. Vui lòng thử lại.")
+                await notify_error(context, ALLOWED_CHAT_ID, "Dữ liệu không đủ để phân tích")
+                return
+
+            sma_5 = calculate_sma(price_history, 5)
+            sma_20, upper_band, lower_band = calculate_bollinger_bands(price_history)
+            macd, signal = calculate_macd(price_history)
+            rsi = calculate_rsi(price_history)
+            k_value, d_value = calculate_stochastic(price_history, high_history, low_history)
+            vwap = calculate_vwap(price_history, volume_history, high_history, low_history)
+            atr = calculate_atr(high_history, low_history, price_history)
+            fib_382, fib_618, fib_diff = calculate_fibonacci_levels(price_history)
+            predicted_price = predict_price_rf(price_history, volume_history, high_history, low_history)
+            candlestick_pattern = detect_candlestick_pattern(high_history, low_history, open_history, price_history)
+            volume_trend = "TĂNG" if sum(volume_history[-5:]) > sum(volume_history[-10:-5]) else "GIẢM"
+            volume_spike = calculate_volume_spike(volume_history)
+            breakout = detect_breakout(price_history, high_history, low_history)
+            support_resistance_signal = detect_support_resistance(latest_price)
+
+            buy_signals = [
+                (1.5 if macd is not None and signal is not None and macd > signal else 0, "MACD Buy"),
+                (1.2 if latest_price is not None and sma_5 is not None and latest_price > sma_5 else 0, "SMA Buy"),
+                (1.5 if volume_trend == "TĂNG" else 0, "Volume Up"),
+                (1.5 if lower_band is not None and latest_price <= lower_band else 0, "Bollinger Lower"),
+                (2.0 if rsi is not None and not np.isnan(rsi) and rsi < 30 else 0, "RSI Oversold"),
+                (2.5 if rsi is not None and not np.isnan(rsi) and rsi < 20 else 0, "RSI Strongly Oversold"),
+                (1.2 if k_value is not None and d_value is not None and k_value < 20 else 0, "Stochastic Oversold"),
+                (1.5 if vwap is not None and latest_price < vwap else 0, "Below VWAP"),
+                (1.3 if fib_618 is not None and latest_price <= fib_618 else 0, "Fib 61.8%"),
+                (1.5 if candlestick_pattern == "Doji - Tín hiệu đảo chiều tiềm năng" else 0, "Doji Buy"),
+                (2.0 if volume_spike else 0, "Volume Spike Buy"),
+                (2.5 if breakout == "Breakout Up" else 0, "Breakout Up")
+            ]    
+            sell_signals = [
+                (1.5 if macd is not None and signal is not None and macd < signal else 0, "MACD Sell"),
+                (1.2 if latest_price is not None and sma_5 is not None and latest_price < sma_5 else 0, "SMA Sell"),
+                (1.5 if volume_trend == "GIẢM" else 0, "Volume Down"),
+                (1.5 if upper_band is not None and latest_price >= upper_band else 0, "Bollinger Upper"),
+                (2.0 if rsi is not None and not np.isnan(rsi) and rsi > 70 else 0, "RSI Overbought"),
+                (2.5 if rsi is not None and not np.isnan(rsi) and rsi > 80 else 0, "RSI Strongly Overbought"),
+                (1.2 if k_value is not None and d_value is not None and k_value > 80 else 0, "Stochastic Overbought"),
+                (1.5 if vwap is not None and latest_price > vwap else 0, "Above VWAP"),
+                (1.3 if fib_382 is not None and latest_price >= fib_382 else 0, "Fib 38.2%"),
+                (1.5 if candlestick_pattern == "Doji - Tín hiệu đảo chiều tiềm năng" else 0, "Doji Sell"),
+                (2.0 if volume_spike else 0, "Volume Spike Sell"),
+                (2.5 if breakout == "Breakout Down" else 0, "Breakout Down")
+            ]
+
+            buy_score = sum(weight for weight, _ in buy_signals)
+            sell_score = sum(weight for weight, _ in sell_signals)
+
+            trend = "MUA" if buy_score > sell_score else "BÁN" if sell_score > buy_score else "CHỜ LỆNH"
+            total_score = buy_score + sell_score
+            win_rate = ((buy_score / total_score) * 100 if trend == "MUA" else (sell_score / total_score) * 100 if trend == "BÁN" else 50) if total_score > 0 else 50
+
+            latest_price_str = format_value(latest_price)
+            win_rate_str = format_value(win_rate)
+
+            report = (
+                f"🏗️ COINCEX — BTC/USD 🌐\n"
+                f"Time: {datetime.now().strftime('%H:%M:%S %d-%m-%Y')}\n"
+                f"Lệnh: {trend}\n"
+                f"Tỷ lệ thắng: {win_rate_str}%\n"
+                f"Giá hiện tại: {latest_price_str} USD"
+            )
+
+            try:
+                await update.message.reply_text(report)
+                logger.info(f"Báo cáo tín hiệu được gửi đến chat {chat_id}")
+                save_to_csv(latest_price, trend, win_rate, support_resistance_signal, chat_id)
+            except TelegramError as e:
+                logger.error(f"Không thể gửi tin nhắn Telegram đến {chat_id}: {e}")
+                await update.message.reply_text("Lỗi khi gửi tín hiệu. Vui lòng thử lại.")
+                await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi khi gửi tín hiệu đến chat {chat_id}: {e}")
+        except Exception as e:
+            logger.error(f"Lỗi trong lệnh signals: {e}")
+            await update.message.reply_text("Lỗi khi xử lý tín hiệu. Vui lòng thử lại.")
+            await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi trong lệnh signals: {e}")
+
+# --- Lệnh Settings ---
 API_KEY, API_SECRET = range(2)
 
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -713,19 +713,19 @@ async def get_api_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Cài đặt API thành công! Sử dụng /signals để xem tín hiệu.")
         return ConversationHandler.END
     except TelegramError as e:
-        logger.error(f"Failed to send Telegram confirmation to {update.effective_chat.id}: {e}")
-        await notify_error(context, ALLOWED_CHAT_ID, f"Error in API settings for chat {update.effective_chat.id}: {e}")
+        logger.error(f"Không thể gửi xác nhận Telegram đến {update.effective_chat.id}: {e}")
+        await notify_error(context, ALLOWED_CHAT_ID, f"Lỗi trong cài đặt API cho chat {update.effective_chat.id}: {e}")
         return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Đã hủy cài đặt.")
     return ConversationHandler.END
 
-# --- Health Check Endpoint ---
+# --- Endpoint kiểm tra sức khỏe ---
 async def health_check(request):
     return web.Response(text="OK")
 
-# --- Webhook Handler ---
+# --- Xử lý Webhook ---
 async def webhook_handler(request):
     global application
     try:
@@ -736,12 +736,12 @@ async def webhook_handler(request):
                 await application.process_update(update)
         return web.Response(text="OK")
     except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
+        logger.error(f"Lỗi khi xử lý webhook: {e}")
         if application:
-            await notify_error(application, ALLOWED_CHAT_ID, f"Webhook error: {e}")
+            await notify_error(application, ALLOWED_CHAT_ID, f"Lỗi webhook: {e}")
         return web.Response(text="OK", status=200)
 
-# --- Setup Webhook Server ---
+# --- Thiết lập Webhook Server ---
 async def setup_webhook():
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, webhook_handler)
@@ -750,33 +750,33 @@ async def setup_webhook():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT)
     await site.start()
-    logger.info(f"Webhook server started on http://0.0.0.0:{WEBHOOK_PORT}")
+    logger.info(f"Webhook server khởi động tại http://0.0.0.0:{WEBHOOK_PORT}")
 
-# --- Validate Telegram Token ---
+# --- Xác thực Token Telegram ---
 async def validate_token(token: str) -> bool:
     try:
         bot = Bot(token)
         await bot.get_me()
         return True
     except TelegramError as e:
-        logger.error(f"Invalid Telegram token: {e}")
+        logger.error(f"Token Telegram không hợp lệ: {e}")
         return False
 
-# --- Main Function ---
+# --- Hàm chính ---
 async def main():
     global application
     if not await validate_token(TELEGRAM_TOKEN):
-        logger.error("Bot cannot start due to invalid Telegram token.")
+        logger.error("Bot không thể khởi động do token Telegram không hợp lệ.")
         return
     
     try:
-        logger.info("Loading authorized chats...")
+        logger.info("Đang tải danh sách chat được ủy quyền...")
         load_authorized_chats()
-        logger.info("Authorized chats loaded successfully.")
-        logger.info("Initializing Telegram bot...")
+        logger.info("Đã tải danh sách chat được ủy quyền thành công.")
+        logger.info("Khởi tạo bot Telegram...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-        logger.info("Adding command handlers...")
+        logger.info("Thêm các trình xử lý lệnh...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("set_up", set_up))
         application.add_handler(CommandHandler("help", help_command))
@@ -792,54 +792,54 @@ async def main():
             fallbacks=[CommandHandler("cancel", cancel)]
         ))
 
-        logger.info("Handlers added successfully.")
-        logger.info("Setting up webhook...")
+        logger.info("Đã thêm các trình xử lý lệnh thành công.")
+        logger.info("Đang thiết lập webhook...")
         webhook_url = os.environ.get("WEBHOOK_URL")
         if not webhook_url:
-            logger.error("WEBHOOK_URL not set in environment variables. Please set it to your Render URL (e.g., https://your-app.onrender.com/webhook).")
+            logger.error("WEBHOOK_URL chưa được thiết lập trong biến môi trường. Vui lòng thiết lập nó (ví dụ: https://your-app.onrender.com/webhook).")
             return
         try:
             await application.bot.set_webhook(url=webhook_url)
-            logger.info(f"Successfully set webhook to: {webhook_url}")
+            logger.info(f"Thiết lập webhook thành công tại: {webhook_url}")
         except TelegramError as e:
-            logger.error(f"Failed to set webhook: {e}")
-            await notify_error(None, ALLOWED_CHAT_ID, f"Failed to set webhook: {e}")
+            logger.error(f"Không thể thiết lập webhook: {e}")
+            await notify_error(None, ALLOWED_CHAT_ID, f"Không thể thiết lập webhook: {e}")
             return
 
         await application.initialize()
         await application.start()
         await setup_webhook()
 
-        logger.info("Application started successfully.")
+        logger.info("Ứng dụng khởi động thành công.")
         try:
             while True:
-                await asyncio.sleep(1)  # Keep the event loop running
+                await asyncio.sleep(1)  # Giữ vòng lặp sự kiện chạy
         except KeyboardInterrupt:
-            logger.info("Received shutdown signal, stopping bot...")
+            logger.info("Nhận tín hiệu tắt, đang dừng bot...")
         finally:
-            logger.info("Shutting down application...")
+            logger.info("Đang tắt ứng dụng...")
             try:
                 await application.bot.delete_webhook()
-                logger.info("Webhook deleted.")
+                logger.info("Webhook đã được xóa.")
                 await application.stop()
                 await application.shutdown()
-                logger.info("Bot shutdown completed successfully.")
+                logger.info("Tắt bot thành công.")
             except Exception as e:
-                logger.error(f"Error during shutdown: {e}")
+                logger.error(f"Lỗi khi tắt: {e}")
     except Exception as e:
-        logger.error(f"Failed to run bot: {e}")
-        await notify_error(None, ALLOWED_CHAT_ID, f"Failed to start bot: {e}")
+        logger.error(f"Không thể chạy bot: {e}")
+        await notify_error(None, ALLOWED_CHAT_ID, f"Không thể khởi động bot: {e}")
 
-# --- Run the bot ---
+# --- Chạy bot ---
 if __name__ == '__main__':
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(main())
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user.")
+        logger.info("Bot bị dừng bởi người dùng.")
     except Exception as e:
-        logger.error(f"Error running bot: {e}")
+        logger.error(f"Lỗi khi chạy bot: {e}")
     finally:
         if loop.is_running():
             pending = asyncio.all_tasks(loop=loop)
@@ -850,4 +850,4 @@ if __name__ == '__main__':
             except Exception:
                 pass
             loop.close()
-        logger.info("Application fully terminated.")
+        logger.info("Ứng dụng đã được chấm dứt hoàn toàn.")
