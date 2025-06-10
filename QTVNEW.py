@@ -44,23 +44,24 @@ def load_config() -> dict:
             }
         
         # Fallback to config file
+        config = {"TELEGRAM_TOKENS": [], "NEWS_API_KEY": ""}
         if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            return config
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                if not isinstance(config.get("TELEGRAM_TOKENS"), list):
+                    config["TELEGRAM_TOKENS"] = []
+                if not isinstance(config.get("NEWS_API_KEY"), str):
+                    config["NEWS_API_KEY"] = ""
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON in {CONFIG_FILE}: {e}. Using default config.")
+            except Exception as e:
+                logger.error(f"Error reading {CONFIG_FILE}: {e}. Using default config.")
         
-        # Create default config if none exists
-        default_config = {
-            "TELEGRAM_TOKENS": [],
-            "NEWS_API_KEY": ""
-        }
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(default_config, f, indent=4)
-        logger.warning("Created empty coincex.json. Please set TELEGRAM_TOKENS and NEWS_API_KEY.")
-        return default_config
+        return config
     except Exception as e:
-        logger.error(f"Error loading config: {e}")
-        raise
+        logger.error(f"Configuration error: {e}. Using default config.")
+        return {"TELEGRAM_TOKENS": [], "NEWS_API_KEY": ""}
 
 try:
     config = load_config()
