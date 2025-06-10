@@ -75,7 +75,7 @@ except Exception as e:
 # --- Constants ---
 KRAKEN_OHLC_URL = 'https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1'
 HISTORY_FILE = "price_history.csv"
-MAX_HISTORY = 30  # Reduced to avoid memory issues
+MAX_HISTORY = 30
 MIN_ANALYSIS_DURATION = 5
 MIN_RESTART_DELAY = 5
 REQUEST_TIMEOUT = 5
@@ -91,10 +91,10 @@ resistance_level: Optional[float] = None
 is_analyzing = False
 
 # --- Get BTC Price and Volume ---
-async def_get_btc_price_and_volume() -> Tuple[Optional[float], Optional[float], List[float]]:
+async def get_btc_price_and_volume() -> Tuple[Optional[float], Optional[float], List[float], List[float], List[float], List[float], List[float]]:
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(KRAKEN_URL, timeout=REQUEST_TIMEOUT) as response:
+            async with session.get(KRAKEN_OHLC_URL, timeout=REQUEST_TIMEOUT) as response:
                 response.raise_for_status()
                 data = await response.json()
         
@@ -401,7 +401,7 @@ async def get_economic_news() -> List[str]:
 # --- Get Economic Calendar ---
 def get_economic_calendar() -> List[str]:
     try:
-        return ["USD Non-Farm Payrolls at 14:30", "FOMC Interest Rate Decision at 15:00"]
+        return ["USD Non-Farm Payrolls at 14:30", "FOMC Interest Rate Decision at 20:00"]
     except Exception as e:
         logger.error(f"Error fetching economic calendar: {e}")
         return []
@@ -409,7 +409,7 @@ def get_economic_calendar() -> List[str]:
 # --- Calculate Risk Management ---
 def calculate_risk_management(capital: float, risk_percentage: float = 0.02, atr: Optional[float] = None) -> float:
     if atr is None:
-        atr = calculate_atr(high_history, low_history, atr_history_price_history)
+        atr = calculate_atr(high_history, low_history, price_history)
     return capital * risk_percentage / atr if atr else capital * risk_percentage
 
 # --- Martingale Strategy ---
@@ -420,12 +420,12 @@ def martingale_strategy(last_bet: float, win: bool = False) -> float:
 def detect_support_resistance(price: Optional[float]) -> str:
     global support_level, resistance_level
     if support_level is None or (price is not None and price < support_level * 0.98):
-        support_level = level price * 0.98 if price is not None else None
+        support_level = price * 0.98 if price is not None else None
     if resistance_level is None or (price is not None and price > resistance_level * 1.02):
-        resistance_level = level price * 1.02 if price is not None else None
+        resistance_level = price * 1.02 if price is not None else None
     if price is not None and support_level is not None and price <= support_level:
         return "Cảnh báo: Chạm vùng hỗ trợ mạnh!"
-    if price is None and resistance_level is not None and price >= resistance_level:
+    elif price is not None and resistance_level is not None and price >= resistance_level:
         return "Cảnh báo: Chạm vùng kháng cự mạnh!"
     return "Ổn định"
 
@@ -439,24 +439,24 @@ def format_value(value: Optional[float], decimals: int = 2) -> str:
 def save_to_csv(price: float, trend: str, win_rate: float, market_status: str, chat_id: str):
     try:
         file_exists = os.path.exists(HISTORY_FILE)
-        with open(HISTORY_FILE, 'a', 'a', newline='', encoding='utf-8') as f:
+        with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow(['Time', 'ChatID', 'Price', 'Trend', 'WinRate', 'Price'MarketStatus'])
-            writer.writerow([datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(chat_id), price, trend, win_rate, market_status])
+                writer.writerow(['Time', 'ChatID', 'Price', 'Trend', 'WinRate', 'MarketStatus'])
+            writer.writerow([datetime.now().strftime('%Y-%m-%d %H:%M:%S'), chat_id, price, trend, win_rate, market_status])
     except Exception as e:
         logger.error(f"Error saving to CSV: {e}")
 
 # --- Get Help Text ---
 def get_help_text() -> str:
     return """
-    Danh sách các lệnh hỗ trợ:
-    - /give: Lấy kết quả phân tích thị trường sau 5 giây.
-    - /cskh: Liên hệ hỗ trợ qua Telegram.
-    - /help: Hiển thị danh sách các lệnh này.
-    
-    Gõ /<lệnh> để sử dụng!
-    """
+Danh sách các lệnh hỗ trợ:
+- /give: Lấy kết quả phân tích thị trường sau 5 giây.
+- /cskh: Liên hệ hỗ trợ qua Telegram.
+- /help: Hiển thị danh sách các lệnh này.
+
+Gõ /<lệnh> để sử dụng!
+"""
 
 # --- Analyze Market ---
 async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, analysis_duration: float = 5) -> None:
@@ -510,23 +510,23 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
         
         # Technical analysis
         sma_5 = calculate_sma(price_history)
-        ema_9 = calculate_ema(price_history, period=9)
-        ema_21 = calculate_ema(prices_history, period=21)
+        ema_9 = calculate_ema(price_history, 9)
+        ema_21 = calculate_ema(price_history, 21)
         sma_20, upper_band, lower_band = calculate_bollinger_bands(price_history)
         macd, signal = calculate_macd(price_history)
         rsi = calculate_rsi(price_history)
-        k_value, d_value = calculate_stochastic(prices_history, high_history, low_history)
-        vwap = calculate_vwap(prices_history, volume_history, high_history, low_history)
-        atr = calculate_atr(highs_history, low_history, price_history)
-        fib_382, fib_618, _ = calculate_fibonacci_levels(prices_history)
-        predicted_price = predict_price_rf(prices_history, volume_history, high_history, low_history)
-        candlestick_pattern = detect_candlestick_pattern(highs_history, low_history, open_history, price_history)
-        chart_pattern = detect_chart_patterns(prices_history, high_history, low_history)
-        volume_trend = "TĂNG" if sum(volumes_history[-5:]) > sum(volume_history[-10:-5]) else "GIẢM"
+        k_value, d_value = calculate_stochastic(price_history, high_history, low_history)
+        vwap = calculate_vwap(price_history, volume_history, high_history, low_history)
+        atr = calculate_atr(high_history, low_history, price_history)
+        fib_382, fib_618, _ = calculate_fibonacci_levels(price_history)
+        predicted_price = predict_price_rf(price_history, volume_history, high_history, low_history)
+        candlestick_pattern = detect_candlestick_pattern(high_history, low_history, open_history, price_history)
+        chart_pattern = detect_chart_patterns(price_history, high_history, low_history)
+        volume_trend = "TĂNG" if sum(volume_history[-5:]) > sum(volume_history[-10:-5]) else "GIẢM"
         volume_spike = calculate_volume_spike(volume_history)
-        breakout, is_true_breakout = detect_breakout(prices_history, high_history, low_history, volume_history)
+        breakout, is_true_breakout = detect_breakout(price_history, high_history, low_history, volume_history)
         support_resistance_signal = detect_support_resistance(latest_price)
-        price_behavior = analyze_price_behavior(prices_history, high_history, low_history, open_history, price_history)
+        price_behavior = analyze_price_behavior(price_history, high_history, low_history, open_history, price_history)
         timing_entry = check_timing_entry()
         
         # Data analysis
@@ -535,7 +535,7 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
         
         # Risk management
         capital = 1000
-        position_size = calculate_risk_management(capital=capital)
+        position_size = calculate_risk_management(capital)
         last_bet = 10
         next_bet = martingale_strategy(last_bet, win=False)
         
@@ -573,7 +573,7 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
             (1.5 if candlestick_pattern in ["Bearish Engulfing - Tín hiệu giảm", "Shooting Star - Tín hiệu giảm", 
                                            "Evening Star - Tín hiệu giảm", "Three Black Crows - Tín hiệu giảm"] else 0, candlestick_pattern),
             (1.5 if chart_pattern in ["Double Top - Tín hiệu đảo chiều giảm", "Head and Shoulders - Tín hiệu đảo chiều giảm"] else 0, chart_pattern),
-            (2.0 if volume_spike else 0, "Volume Spike"),
+            (2.0 if volume_spike else 0, "Volume Spike Sell"),
             (2.5 if breakout == "Breakout Down - Tín hiệu giảm mạnh" and is_true_breakout else 0, "Breakout Down"),
             (1.5 if price_behavior == "Weak Uptrend - Lực mua yếu" else 0, "Weak Uptrend"),
             (1.0 if timing_entry == "Caution - Tránh giờ tin tức hoặc phiên thấp điểm" else 0, "Poor Timing")
@@ -600,24 +600,24 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
         market_status += f"Thời điểm: {timing_entry}"
         
         report = f"""
-        📈 **Coincex BTC/USD** 📈
-        🕒 **Thời gian**: {datetime.now().strftime('%H:%M:%S %d-%m-%Y')}
-        💹 **Giá hiện tại**: {latest_price_str} USD
-        🚨 **Tín hiệu**: {trend}
-        🎯 **Tỷ lệ thắng**: {win_rate_str}%
-        📋 **Trạng thái**: {market_status}
-        """
+📈 **Coincex - BTC/USD** 📈
+🕒 **Thời gian**: {datetime.now().strftime('%H:%M:%S %d-%m-%Y')}
+💹 **Giá hiện tại**: {latest_price_str} USD
+🚨 **Tín hiệu**: {trend}
+🎯 **Tỷ lệ thắng**: {win_rate_str}%
+📋 **Trạng thái**: {market_status}
+"""
         
         for token in TELEGRAM_TOKENS:
             try:
                 await context.bot.send_message(chat_id=chat_id, text=report)
                 logger.info(f"Analysis report sent to chat {chat_id} with token {token[:8]}...")
                 save_to_csv(latest_price, trend, win_rate, market_status, chat_id)
-            except (RetryError, TimedOut) as e:
+            except (RetryAfter, TimedOut) as e:
                 logger.warning(f"Telegram rate limit hit for {chat_id}: {e}. Waiting {e.retry_after} seconds.")
                 await asyncio.sleep(e.retry_after + 1)
             except TelegramError as e:
-                logger.error(f"Error sending to Telegram {chat_id} with token {token[:8]}: {e}")
+                logger.error(f"Error sending to {chat_id} with token {token[:8]}: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error sending to {chat_id}: {e}")
     except Exception as e:
@@ -630,7 +630,7 @@ async def analyze_market(update: Update, context: ContextTypes.DEFAULT_TYPE, ana
 async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     try:
-        await update.message.reply_text="Đang phân tích thị trường, vui lòng đợi 5 giây...")
+        await update.message.reply_text("Đang phân tích thị trường, vui lòng đợi 5 giây...")
         wait_time = random.uniform(5, 10)
         await asyncio.sleep(wait_time)
         await analyze_market(update, context, analysis_duration=5)
@@ -664,9 +664,9 @@ async def health_check(request: web.Request) -> web.Response:
 async def start_bot(token: str) -> Application:
     try:
         application = Application.builder().token(token).build()
-        application.add_handler(CommandHandler("give", give))
-        application.add_handler(CommandHandler("cskh", cskh))
-        application.add_handler(CommandHandler("help", help))
+        application.add_handler(CommandHandler("give", give_command))
+        application.add_handler(CommandHandler("cskh", cskh_command))
+        application.add_handler(CommandHandler("help", help_command))
         logger.info(f"Bot initialized with token {token[:8]}...")
         return application
     except Exception as e:
