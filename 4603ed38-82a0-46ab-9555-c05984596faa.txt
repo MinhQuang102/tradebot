@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+bot.log
+price_history.csv
+coincex.json
+.env
+*.log
