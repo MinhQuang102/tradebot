@@ -2,6 +2,6 @@ requests
 pandas
 numpy
 scikit-learn
-python-telegram-bot==20.0.2
+python-telegram-bot==21.0.1  # Cập nhật từ 20.0.2 sang phiên bản mới nhất tương thích
 fastapi
 uvicorn
