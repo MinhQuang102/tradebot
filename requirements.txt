@@ -1,7 +1,6 @@
-requests
-pandas
-numpy
-scikit-learn
-python-telegram-bot==21.0.1  # Cập nhật từ 20.0.2 sang phiên bản mới nhất tương thích
-fastapi
-uvicorn
+requests==2.31.0
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.5.1
+python-telegram-bot==21.4
+urllib3==2.2.2
