@@ -1,0 +1,3 @@
+TELEGRAM_TOKEN=your_telegram_bot_token
+ALLOWED_CHAT_ID=your_allowed_chat_id
+NEWS_API_KEY=your_news_api_key
