@@ -1,16 +1,14 @@
 services:
-  - type: web
-    name: qtv-chat-parallel-bot
+  - type: worker
+    name: telegram-bot
     env: python
     region: oregon
-    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python QTVChatParallelBot.py
     envVars:
       - key: TELEGRAM_TOKEN
-        sync: false
+        value: 7954920709:AAFNqMtIl4zxCTFAttG-l5DkcwIIYLE_yAY
       - key: ALLOWED_CHAT_ID
-        sync: false
+        value: 6696130463
       - key: NEWS_API_KEY
-        sync: false
-    autoDeploy: false
+        value: af9b016f3f044a6f84453bbe1a526f0b
