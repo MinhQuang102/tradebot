@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Join the AI Mentor Basic Course for world-class AI training and certification.">
+    <title>AI Mentor Basic Course</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+    <style>
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes parallax {
+            from { transform: translateY(0); }
+            to { transform: translateY(-20px); }
+        }
+        .fade-in-up {
+            animation: fadeInUp 0.9s ease-out forwards;
+        }
+        .parallax {
+            animation: parallax 5s infinite alternate ease-in-out;
+        }
+        .glass {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        .certificate-container {
+            max-width: 900px;
+            margin: 0 auto;
+            box-shadow: 0 15px 50px rgba(0, 0, 0, 0.2);
+        }
+        .gold-foil {
+            filter: drop-shadow(0 0 5px rgba(255, 215, 0, 0.8));
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-gray-50 to-blue-100 font-sans text-gray-800">
+    <!-- Navigation -->
+    <nav class="bg-gradient-to-r from-blue-900 to-indigo-800 text-white sticky top-0 z-50 shadow-2xl">
+        <div class="container mx-auto px-6 py-5 flex justify-between items-center">
+            <h1 class="text-4xl font-extrabold tracking-wide">AI Mentor Basic Course</h1>
+            <div class="space-x-8">
+                <a href="#home" class="hover:text-yellow-300 transition duration-300 text-lg">Home</a>
+                <a href="#verify" class="hover:text-yellow-300 transition duration-300 text-lg">Verify Certificate</a>
+                <a href="#graduates" class="hover:text-yellow-300 transition duration-300 text-lg">Graduates</a>
+                <a href="#admin-login" class="hover:text-yellow-300 transition duration-300 text-lg">Admin Login</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section id="home" class="relative py-40 bg-gradient-to-b from-blue-800 to-indigo-900 text-white overflow-hidden">
+        <div class="absolute inset-0 opacity-30 parallax">
+            <img src="https://images.unsplash.com/photo-1600585154340-be6161a56a0c" alt="AI Tech Background" class="w-full h-full object-cover" loading="lazy">
+        </div>
+        <div class="container mx-auto text-center relative z-10">
+            <h2 class="text-6xl md:text-7xl font-extrabold mb-8 fade-in-up">AI Mentor Basic Course</h2>
+            <p class="text-xl md:text-2xl mb-10 max-w-3xl mx-auto fade-in-up delay-200">Embark on a transformative journey with world-class AI training and a prestigious certification from AI Mentor.</p>
+            <a href="#graduates" class="inline-block bg-yellow-400 text-gray-900 px-10 py-5 rounded-full font-semibold hover:bg-yellow-500 transition duration-300 shadow-2xl pulse-hover fade-in-up delay-400" aria-label="Join Now">Join Now</a>
+        </div>
+    </section>
+
+    <!-- Admin Login Section -->
+    <section id="admin-login" class="py-24 bg-white">
+        <div class="container mx-auto max-w-xl px-6">
+            <h2 class="text-4xl font-bold mb-10 text-center text-gray-900 fade-in-up">Admin Login</h2>
+            <div id="login-form" class="bg-white glass p-10 rounded-3xl shadow-2xl fade-in-up delay-200" role="form">
+                <div class="mb-8">
+                    <label class="block text-gray-700 font-semibold mb-3" for="admin-username">Username</label>
+                    <input type="text" id="admin-username" class="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-600 transition" aria-required="true">
+                </div>
+                <div class="mb-10">
+                    <label class="block text-gray-700 font-semibold mb-3" for="admin-password">Password</label>
+                    <input type="password" id="admin-password" class="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-600 transition" aria-required="true">
+                </div>
+                <button onclick="adminLogin()" class="w-full bg-blue-600 text-white p-4 rounded-xl font-semibold hover:bg-blue-700 transition duration-300 pulse-hover" aria-label="Login">Login</button>
+                <p id="login-error" class="text-red-500 mt-5 text-center hidden">Invalid credentials</p>
+            </div>
+            <div id="admin-panel" class="hidden bg-white glass p-10 rounded-3xl shadow-2xl fade-in-up delay-200" role="region">
+                <h3 class="text-3xl font-bold mb-8 text-gray-900">Create Certificate</h3>
+                <div class="mb-8">
+                    <label class="block text-gray-700 font-semibold mb-3" for="cert-name">Recipient Name</label>
+                    <input type="text" id="cert-name" class="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-600 transition" aria-required="true">
+                </div>
+                <div class="mb-10">
+                    <label class="block text-gray-700 font-semibold mb-3" for="cert-date">Issue Date</label>
+                    <input type="date" id="cert-date" class="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-600 transition" aria-required="true">
+                </div>
+                <button onclick="createCertificate()" class="w-full bg-green-600 text-white p-4 rounded-xl font-semibold hover:bg-green-700 transition duration-300 pulse-hover" aria-label="Create Certificate">Create Certificate</button>
+                <p id="cert-message" class="text-green-500 mt-5 text-center hidden"></p>
+                <div id="cert-preview" class="mt-8 hidden certificate-container scale-in">
+                    <canvas id="cert-canvas" class="w-full rounded-2xl"></canvas>
+                    <a id="cert-download" class="block mt-5 text-center bg-blue-600 text-white p-4 rounded-xl font-semibold hover:bg-blue-700 transition duration-300 pulse-hover" aria-label="Download Certificate">Download Certificate</a>
+                </div>
+                <button onclick="logout()" class="mt-8 w-full bg-red-600 text-white p-4 rounded-xl font-semibold hover:bg-red-700 transition duration-300 pulse-hover" aria-label="Logout">Logout</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Certificate Verification Section -->
+    <section id="verify" class="py-24 bg-gray-100">
+        <div class="container mx-auto max-w-xl px-6">
+            <h2 class="text-4xl font-bold mb-10 text-center text-gray-900 fade-in-up">Verify Certificate</h2>
+            <div class="bg-white glass p-10 rounded-3xl shadow-2xl fade-in-up delay-200" role="form">
+                <div class="mb-10">
+                    <label class="block text-gray-700 font-semibold mb-3" for="cert-id">Certificate ID</label>
+                    <input type="text" id="cert-id" class="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-600 transition" aria-required="true">
+                </div>
+                <button onclick="verifyCertificate()" class="w-full bg-blue-600 text-white p-4 rounded-xl font-semibold hover:bg-blue-700 transition duration-300 flex items-center justify-center pulse-hover" aria-label="Verify">
+                    <span id="verify-text">Verify</span>
+                    <svg id="verify-spinner" class="animate-spin h-6 w-6 ml-3 hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 0-4 4H4z"></path>
+                    </svg>
+                </button>
+                <p id="verify-result" class="mt-5 text-center"></p>
+                <div id="verify-preview" class="mt-8 hidden certificate-container scale-in">
+                    <canvas id="verify-canvas" class="w-full rounded-2xl"></canvas>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Attract Graduates Section -->
+    <section id="graduates" class="py-24 bg-white">
+        <div class="container mx-auto px-6">
+            <h2 class="text-4xl font-bold mb-10 text-center text-gray-900 fade-in-up">Why Choose AI Mentor Basic Course?</h2>
+            <p class="text-center mb-12 text-gray-600 max-w-4xl mx-auto fade-in-up delay-200">Our course offers hands-on AI training, inspiring success stories, and exceptional career opportunities for graduates.</p>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <div class="bg-white glass p-6 rounded-2xl shadow-lg hover:shadow-2xl transition duration-300 transform hover:-translate-y-4 fade-in-up delay-200">
+                    <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3" alt="Advanced Curriculum" class="w-full h-52 object-cover rounded-t-lg mb-5" loading="lazy">
+                    <h3 class="text-2xl font-semibold mb-4 text-gray-900">Advanced Curriculum</h3>
+                    <p class="text-gray-600">Master AI with expert-led training and real-world projects.</p>
+                </div>
+                <div class="bg-white glass p-6 rounded-2xl shadow-lg hover:shadow-2xl transition duration-300 transform hover:-translate-y-4 fade-in-up delay-400">
+                    <img src="https://images.unsplash.com/photo-1522071820081-009f0129c71c" alt="Success Stories" class="w-full h-52 object-cover rounded-t-lg mb-5" loading="lazy">
+                    <h3 class="text-2xl font-semibold mb-4 text-gray-900">Success Stories</h3>
+                    <p class="text-gray-600">"This course launched my AI career!" - John Doe, 2024 Graduate</p>
+                </div>
+                <div class="bg-white glass p-6 rounded-2xl shadow-lg hover:shadow-2xl transition duration-300 transform hover:-translate-y-4 fade-in-up delay-600">
+                    <img src="https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e" alt="High Employability" class="w-full h-52 object-cover rounded-t-lg mb-5" loading="lazy">
+                    <h3 class="text-2xl font-semibold mb-4 text-gray-900">High Employability</h3>
+                    <p class="text-gray-600">95% of graduates land AI jobs within 6 months.</p>
+                </div>
+            </div>
+            <div class="mt-12 text-center fade-in-up delay-800">
+                <h3 class="text-3xl font-bold mb-8 text-gray-900">Join the AI Mentor Community</h3>
+                <div class="max-w-lg mx-auto">
+                    <input type="email" id="contact-email" placeholder="Enter your email" class="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-600 transition mb-5" aria-required="true">
+                    <button onclick="joinProgram()" class="w-full bg-yellow-400 text-gray-900 p-4 rounded-xl font-semibold hover:bg-yellow-500 transition duration-300 pulse-hover" aria-label="Get Started">Get Started</button>
+                    <p id="contact-message" class="text-green-500 mt-5 text-center hidden"></p>
+                </div>
+            </div>
+            <!-- Testimonial Gallery -->
+            <div class="mt-16">
+                <h3 class="text-3xl font-bold mb-8 text-center text-gray-900 fade-in-up">Testimonials</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div class="bg-white glass p-6 rounded-2xl shadow-lg fade-in-up delay-200">
+                        <img src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d" alt="Testimonial 1" class="w-full h-40 object-cover rounded-lg mb-4" loading="lazy">
+                        <p class="text-gray-600">"Life-changing AI skills!" - Jane Smith</p>
+                    </div>
+                    <div class="bg-white glass p-6 rounded-2xl shadow-lg fade-in-up delay-400">
+                        <img src="https://images.unsplash.com/photo-1570295999919-56ceb5ecca61" alt="Testimonial 2" class="w-full h-40 object-cover rounded-lg mb-4" loading="lazy">
+                        <p class="text-gray-600">"Best decision for my career!" - Michael Lee</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gradient-to-r from-blue-900 to-indigo-800 text-white py-8">
+        <div class="container mx-auto px-6 text-center">
+            <p class="text-xl">© 2025 AI Mentor Basic Course - AI Mentor Program. All rights reserved.</p>
+            <p class="text-sm mt-2">Last updated: June 24, 2025, 05:44 PM +07</p>
+            <div class="mt-4 flex justify-center space-x-6">
+                <a href="#" aria-label="Facebook"><img src="https://img.icons8.com/ios-filled/50/ffffff/facebook.png" alt="Facebook" class="w-6 h-6 hover:opacity-80 transition" loading="lazy"></a>
+                <a href="#" aria-label="Twitter"><img src="https://img.icons8.com/ios-filled/50/ffffff/twitter.png" alt="Twitter" class="w-6 h-6 hover:opacity-80 transition" loading="lazy"></a>
+                <a href="#" aria-label="LinkedIn"><img src="https://img.icons8.com/ios-filled/50/ffffff/linkedin.png" alt="LinkedIn" class="w-6 h-6 hover:opacity-80 transition" loading="lazy"></a>
+            </div>
+            <div class="mt-6 max-w-md mx-auto">
+                <input type="text" id="contact-footer" placeholder="Contact us at support@aimentor.com" class="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-600 transition mb-3" disabled>
+                <button class="w-full bg-yellow-400 text-gray-900 p-3 rounded-xl font-semibold hover:bg-yellow-500 transition duration-300 pulse-hover" aria-label="Contact Us" disabled>Contact Us</button>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Debounce function for performance
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func(...args), wait);
+            };
+        }
+
+        // Simulated backend with localStorage
+        function initStorage() {
+            if (!localStorage.getItem('admin')) {
+                localStorage.setItem('admin', JSON.stringify({ username: 'admin', password: 'admin123' }));
+            }
+            if (!localStorage.getItem('certificates')) {
+                localStorage.setItem('certificates', JSON.stringify([]));
+            }
+        }
+
+        // Draw super-professional certificate with QR code
+        function drawCertificate(canvasId, certId, name, date) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            canvas.width = 900;
+            canvas.height = 600;
+
+            // Background with subtle texture
+            const grd = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            grd.addColorStop(0, '#f9f9f9');
+            grd.addColorStop(1, '#e0e0e0');
+            ctx.fillStyle = grd;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Watermark
+            ctx.globalAlpha = 0.05;
+            ctx.font = 'italic 130px Times New Roman';
+            ctx.fillStyle = '#b0bec5';
+            ctx.textAlign = 'center';
+            ctx.rotate(-Math.PI / 4);
+            ctx.fillText('AI Mentor', canvas.width / 2, canvas.height / 2);
+            ctx.rotate(Math.PI / 4);
+            ctx.globalAlpha = 1;
+
+            // Gold foil border
+            ctx.strokeStyle = 'rgba(255, 215, 0, 0.9)';
+            ctx.lineWidth = 12;
+            ctx.strokeRect(20, 20, canvas.width - 40, canvas.height - 40);
+            ctx.strokeStyle = '#1e3a8a';
+            ctx.lineWidth = 6;
+            ctx.strokeRect(30, 30, canvas.width - 60, canvas.height - 60);
+
+            // Logo placeholder (replace with actual logo URL)
+            ctx.font = 'bold 40px Arial';
+            ctx.fillStyle = '#1e3a8a';
+            ctx.textAlign = 'left';
+            ctx.fillText('AI Mentor Logo', 50, 100);
+
+            // Title with emboss effect
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#1a237e';
+            ctx.font = 'bold 50px Times New Roman';
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ffffff';
+            ctx.strokeText('CERTIFICATE OF COMPLETION', canvas.width / 2, 160);
+            ctx.fillText('CERTIFICATE OF COMPLETION', canvas.width / 2, 160);
+            ctx.font = 'bold 38px Times New Roman';
+            ctx.strokeText('AI Mentor Basic Course', canvas.width / 2, 210);
+            ctx.fillText('AI Mentor Basic Course', canvas.width / 2, 210);
+
+            // Award text
+            ctx.font = '32px Times New Roman';
+            ctx.fillStyle = '#424242';
+            ctx.fillText('Awarded to', canvas.width / 2, 290);
+            ctx.font = 'bold 40px Times New Roman';
+            ctx.fillText(name, canvas.width / 2, 340);
+            ctx.font = '32px Times New Roman';
+            ctx.fillText('For exemplary completion of the AI course', canvas.width / 2, 390);
+            ctx.fillText(`Issue Date: ${date}`, canvas.width / 2, 430);
+            ctx.fillText(`Certificate ID: ${certId}`, canvas.width / 2, 470);
+
+            // Signature
+            ctx.font = 'italic 40px Dancing Script'; // Simulated cursive
+            ctx.fillStyle = '#000000';
+            ctx.textAlign = 'right';
+            ctx.fillText('Minh', canvas.width - 70, canvas.height - 70);
+
+            // Holographic seal
+            ctx.beginPath();
+            const sealGradient = ctx.createRadialGradient(canvas.width - 90, canvas.height - 90, 20, canvas.width - 90, canvas.height - 90, 60);
+            sealGradient.addColorStop(0, '#ffca28');
+            sealGradient.addColorStop(0.5, '#f57c00');
+            sealGradient.addColorStop(1, '#ef6c00');
+            ctx.fillStyle = sealGradient;
+            ctx.arc(canvas.width - 90, canvas.height - 90, 60, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '20px Arial';
+            ctx.fillText('AI Mentor Seal', canvas.width - 90, canvas.height - 90);
+
+            // QR Code
+            const qr = qrcode(0, 'L');
+            qr.addData(`https://aimentor.com/verify?cert=${certId}`);
+            qr.make();
+            const qrImg = qr.createImgTag(4);
+            const qrCanvas = document.createElement('canvas');
+            qrCanvas.width = 100;
+            qrCanvas.height = 100;
+            const qrCtx = qrCanvas.getContext('2d');
+            qrCtx.fillStyle = '#ffffff';
+            qrCtx.fillRect(0, 0, 100, 100);
+            qrImg.onload = () => {
+                qrCtx.drawImage(qrImg, 0, 0, 100, 100);
+                ctx.drawImage(qrCanvas, 50, canvas.height - 150, 100, 100);
+            };
+            qrImg.src = qr.createDataURL(4);
+        }
+
+        // Debounced functions
+        const adminLogin = debounce(() => {
+            const username = document.getElementById('admin-username').value;
+            const password = document.getElementById('admin-password').value;
+            const admin = JSON.parse(localStorage.getItem('admin'));
+
+            if (username === admin.username && password === admin.password) {
+                document.getElementById('login-form').classList.add('hidden');
+                document.getElementById('admin-panel').classList.remove('hidden');
+                document.getElementById('login-error').classList.add('hidden');
+            } else {
+                document.getElementById('login-error').classList.remove('hidden');
+            }
+        }, 300);
+
+        const createCertificate = debounce(() => {
+            const name = document.getElementById('cert-name').value.trim();
+            const date = document.getElementById('cert-date').value;
+            if (!name || !date) {
+                document.getElementById('cert-message').textContent = 'Please fill in all fields';
+                document.getElementById('cert-message').classList.remove('text-green-500', 'hidden');
+                document.getElementById('cert-message').classList.add('text-red-500');
+                return;
+            }
+
+            const certId = 'CERT-' + Math.random().toString(36).substr(2, 8).toUpperCase();
+            const certificates = JSON.parse(localStorage.getItem('certificates'));
+            certificates.push({ id: certId, name, date });
+            localStorage.setItem('certificates', JSON.stringify(certificates));
+
+            document.getElementById('cert-message').textContent = `Certificate created successfully: ${certId}`;
+            document.getElementById('cert-message').classList.remove('hidden', 'text-red-500');
+            document.getElementById('cert-message').classList.add('text-green-500');
+
+            document.getElementById('cert-preview').classList.remove('hidden');
+            drawCertificate('cert-canvas', certId, name, date);
+
+            const canvas = document.getElementById('cert-canvas');
+            const downloadLink = document.getElementById('cert-download');
+            downloadLink.href = canvas.toDataURL('image/png', 1.0);
+            downloadLink.download = `certificate_${certId}.png`;
+
+            document.getElementById('cert-name').value = '';
+            document.getElementById('cert-date').value = '';
+        }, 300);
+
+        const verifyCertificate = debounce(() => {
+            const certId = document.getElementById('cert-id').value.trim().toUpperCase();
+            const verifyText = document.getElementById('verify-text');
+            const verifySpinner = document.getElementById('verify-spinner');
+            const result = document.getElementById('verify-result');
+            const verifyPreview = document.getElementById('verify-preview');
+
+            verifyText.classList.add('hidden');
+            verifySpinner.classList.remove('hidden');
+
+            setTimeout(() => {
+                const certificates = JSON.parse(localStorage.getItem('certificates'));
+                const cert = certificates.find(c => c.id === certId);
+
+                if (cert) {
+                    result.textContent = `Valid Certificate: Issued to ${cert.name} on ${cert.date}`;
+                    result.classList.remove('text-red-500');
+                    result.classList.add('text-green-500');
+                    verifyPreview.classList.remove('hidden');
+                    drawCertificate('verify-canvas', cert.id, cert.name, cert.date);
+                } else {
+                    result.textContent = 'Invalid Certificate ID';
+                    result.classList.remove('text-green-500');
+                    result.classList.add('text-red-500');
+                    verifyPreview.classList.add('hidden');
+                }
+
+                verifyText.classList.remove('hidden');
+                verifySpinner.classList.add('hidden');
+            }, 1000);
+        }, 300);
+
+        function joinProgram() {
+            const email = document.getElementById('contact-email').value.trim();
+            if (!email || !email.includes('@')) {
+                document.getElementById('contact-message').textContent = 'Please enter a valid email';
+                document.getElementById('contact-message').classList.remove('hidden', 'text-green-500');
+                document.getElementById('contact-message').classList.add('text-red-500');
+                return;
+            }
+
+            document.getElementById('contact-message').textContent = 'Thank you for your interest! We will contact you soon.';
+            document.getElementById('contact-message').classList.remove('hidden', 'text-red-500');
+            document.getElementById('contact-message').classList.add('text-green-500');
+            document.getElementById('contact-email').value = '';
+        }
+
+        function logout() {
+            document.getElementById('login-form').classList.remove('hidden');
+            document.getElementById('admin-panel').classList.add('hidden');
+            document.getElementById('cert-preview').classList.add('hidden');
+            document.getElementById('admin-username').value = '';
+            document.getElementById('admin-password').value = '';
+        }
+
+        // Smooth scrolling and accessibility
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                document.querySelector(this.getAttribute('href')).focus();
+                document.querySelector(this.getAttribute('href')).scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+        });
+
+        // Initialize storage and animations
+        initStorage();
+        document.querySelectorAll('.fade-in-up').forEach((el, index) => {
+            el.style.animationDelay = `${index * 150}ms`;
+        });
+    </script>
+</body>
+</html>
